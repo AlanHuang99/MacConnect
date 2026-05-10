@@ -5,7 +5,7 @@ import UserNotifications
 
 @main
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
 
@@ -19,7 +19,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         registerPlugins()
-        requestNotificationAuthorization()
+        configureNotificationCenter()
         startNetworking()
         setupStatusItem()
     }
@@ -34,8 +34,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         registry.register(SharePlugin())
     }
 
-    private func requestNotificationAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+    private func configureNotificationCenter() {
+        let center = UNUserNotificationCenter.current()
+        center.delegate = self
+        Notifier.registerCategories()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error {
                 Log.app.notice("Notification authorization request failed: \(error.localizedDescription, privacy: .public)")
             } else if !granted {
@@ -72,6 +75,44 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         } else {
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
+        }
+    }
+
+    // MARK: - UNUserNotificationCenterDelegate
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        willPresent notification: UNNotification,
+        withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void
+    ) {
+        // Show banners even when the menu-bar app is "active" (popover open).
+        completionHandler([.banner, .sound])
+    }
+
+    nonisolated func userNotificationCenter(
+        _ center: UNUserNotificationCenter,
+        didReceive response: UNNotificationResponse,
+        withCompletionHandler completionHandler: @escaping @Sendable () -> Void
+    ) {
+        let actionId = response.actionIdentifier
+        let userInfo = response.notification.request.content.userInfo
+        let deviceId = userInfo[Notifier.userInfoDeviceId] as? String
+        let replyId = userInfo[Notifier.userInfoRequestReplyId] as? String
+        let userText = (response as? UNTextInputNotificationResponse)?.userText
+
+        Task { @MainActor in
+            defer { completionHandler() }
+            guard actionId == Notifier.replyActionIdentifier,
+                  let deviceId, let replyId,
+                  let userText, !userText.isEmpty,
+                  let device = DeviceManager.shared.devices[deviceId]
+            else { return }
+            guard device.isReachable else {
+                Log.plugin.notice("Drop notification reply for offline device \(deviceId, privacy: .public)")
+                return
+            }
+            device.send(NotificationPlugin.replyPacket(requestReplyId: replyId, message: userText))
+            Log.plugin.info("Sent notification reply to \(deviceId, privacy: .public)")
         }
     }
 }

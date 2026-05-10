@@ -61,6 +61,20 @@ struct SettingsView: View {
                         }
                     }
 
+                    section("Plugins") {
+                        let listing = PluginRegistry.shared.allPlugins
+                        if listing.isEmpty {
+                            Text("No plugins registered.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            ForEach(listing, id: \.identifier) { plugin in
+                                Toggle(plugin.displayName, isOn: pluginBinding(plugin.identifier))
+                            }
+                            Text("Disabled plugins are removed from the capabilities advertised to peers.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
+                    }
+
                     section("Trusted devices") {
                         let trusted = settings.trustedDeviceIds.sorted()
                         if trusted.isEmpty {
@@ -99,6 +113,17 @@ struct SettingsView: View {
                     .textSelection(.enabled)
             }
         }
+    }
+
+    private func pluginBinding(_ pluginId: String) -> Binding<Bool> {
+        Binding(
+            get: { MacConnectCore.Settings.shared.isPluginEnabled(pluginId) },
+            set: { newValue in
+                MacConnectCore.Settings.shared.setPluginEnabled(pluginId, newValue)
+                // Re-advertise updated capabilities so peers see the change.
+                LanLinkProvider.shared.refresh()
+            }
+        )
     }
 
     private var loginItemBinding: Binding<Bool> {
