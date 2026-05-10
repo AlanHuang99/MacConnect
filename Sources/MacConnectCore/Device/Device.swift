@@ -12,6 +12,9 @@ public final class Device: ObservableObject, Identifiable {
     @Published public var incomingPairRequest: Bool = false
     /// We asked peer to pair; we're waiting for their response.
     @Published public var outgoingPairRequest: Bool = false
+    /// Peer presented a cert that does not match our pinned one. Until the
+    /// user resets trust, TLS handshakes with this peer will keep failing.
+    @Published public var pinMismatch: Bool = false
     @Published public var lastSeen: Date = Date()
 
     public var protocolVersion: Int

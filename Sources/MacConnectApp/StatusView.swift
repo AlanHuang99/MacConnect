@@ -109,7 +109,9 @@ struct DeviceRow: View {
                     .frame(width: 8, height: 8)
             }
 
-            if device.incomingPairRequest {
+            if device.pinMismatch {
+                pinMismatchPrompt
+            } else if device.incomingPairRequest {
                 pairPrompt
             } else if device.isPaired {
                 pairedActions
@@ -145,6 +147,26 @@ struct DeviceRow: View {
             HStack {
                 Button("Accept") { DeviceManager.shared.acceptPairing(device) }
                 Button("Reject") { DeviceManager.shared.rejectPairing(device) }
+            }
+        }
+    }
+
+    private var pinMismatchPrompt: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            HStack(alignment: .top, spacing: 6) {
+                Image(systemName: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Certificate changed")
+                        .font(.caption.weight(.semibold))
+                    Text("This device's identity does not match the one we pinned. If you trust it (e.g. the app was reinstalled), reset trust and re-pair.")
+                        .font(.caption2).foregroundStyle(.secondary)
+                }
+            }
+            HStack {
+                Button("Reset Trust") { DeviceManager.shared.resetTrust(device) }
+                    .controlSize(.small)
+                Spacer()
             }
         }
     }
