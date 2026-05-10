@@ -108,7 +108,7 @@ struct DeviceRow: View {
                     .frame(width: 8, height: 8)
             }
 
-            if device.pairRequestPending {
+            if device.incomingPairRequest {
                 pairPrompt
             } else if device.isPaired {
                 pairedActions
@@ -162,9 +162,19 @@ struct DeviceRow: View {
 
     private var unpairedActions: some View {
         HStack {
-            Button("Request Pair") { DeviceManager.shared.requestPair(device) }
-                .disabled(!device.isReachable)
-            Spacer()
+            if device.outgoingPairRequest {
+                ProgressView().controlSize(.small)
+                Text("Waiting for peer to accept…")
+                    .font(.caption).foregroundStyle(.secondary)
+                Spacer()
+                Button("Cancel") {
+                    device.outgoingPairRequest = false
+                }
+            } else {
+                Button("Request Pair") { DeviceManager.shared.requestPair(device) }
+                    .disabled(!device.isReachable)
+                Spacer()
+            }
         }
         .controlSize(.small)
     }

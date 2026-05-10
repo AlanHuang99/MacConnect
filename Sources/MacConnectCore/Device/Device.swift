@@ -8,8 +8,17 @@ public final class Device: ObservableObject, Identifiable {
     @Published public var type: DeviceType
     @Published public var isReachable: Bool = false
     @Published public var isPaired: Bool
-    @Published public var pairRequestPending: Bool = false
+    /// Peer asked us to pair; we need user input.
+    @Published public var incomingPairRequest: Bool = false
+    /// We asked peer to pair; we're waiting for their response.
+    @Published public var outgoingPairRequest: Bool = false
     @Published public var lastSeen: Date = Date()
+
+    /// Convenience for old call sites — true if either side has a request pending.
+    public var pairRequestPending: Bool {
+        get { incomingPairRequest || outgoingPairRequest }
+        set { incomingPairRequest = newValue }
+    }
 
     public var protocolVersion: Int
     public var incomingCapabilities: [String]

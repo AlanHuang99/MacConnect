@@ -39,15 +39,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func startNetworking() {
-        let provider = LanLinkProvider.shared
-        provider.onIdentity { identity, link in
-            Task { @MainActor in
-                let device = DeviceManager.shared.upsert(identity: identity)
-                DeviceManager.shared.attach(link: link, to: device.id)
-            }
-        }
         do {
-            try provider.start()
+            try LanLinkProvider.shared.start()
         } catch {
             Log.app.error("Failed to start networking: \(error.localizedDescription, privacy: .public)")
         }

@@ -43,25 +43,52 @@ public final class DeviceManager: ObservableObject {
     public func acceptPairing(_ device: Device) {
         Settings.shared.markTrusted(device.id)
         device.isPaired = true
-        device.pairRequestPending = false
+        device.incomingPairRequest = false
+        device.outgoingPairRequest = false
         device.send(PairPacketBuilder.response(accept: true))
         objectWillChange.send()
     }
 
     public func rejectPairing(_ device: Device) {
-        device.pairRequestPending = false
+        device.incomingPairRequest = false
         device.send(PairPacketBuilder.response(accept: false))
         objectWillChange.send()
     }
 
     public func unpair(_ device: Device) {
         Settings.shared.unmarkTrusted(device.id)
+        CertificateService.shared.deleteRemoteCert(deviceId: device.id)
         device.isPaired = false
         device.send(PairPacketBuilder.response(accept: false))
         objectWillChange.send()
     }
 
     public func requestPair(_ device: Device) {
+        device.outgoingPairRequest = true
         device.send(PairPacketBuilder.request())
+        objectWillChange.send()
+    }
+
+    /// Called by the link layer when a pair packet arrives.
+    public func didReceivePairPacket(accept: Bool, device: Device) {
+        if accept {
+            if device.outgoingPairRequest {
+                // Peer accepted our request
+                Settings.shared.markTrusted(device.id)
+                device.isPaired = true
+                device.outgoingPairRequest = false
+            } else {
+                // Peer is requesting we pair
+                device.incomingPairRequest = true
+            }
+        } else {
+            // Unpair / rejection
+            Settings.shared.unmarkTrusted(device.id)
+            CertificateService.shared.deleteRemoteCert(deviceId: device.id)
+            device.isPaired = false
+            device.outgoingPairRequest = false
+            device.incomingPairRequest = false
+        }
+        objectWillChange.send()
     }
 }

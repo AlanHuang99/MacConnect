@@ -75,16 +75,29 @@ public final class CertificateService: @unchecked Sendable {
         return identity as! SecIdentity
     }
 
+    public var certificatePEMURL: URL { certURL }
+    public var privateKeyPEMURL: URL { keyURL }
+
     public func storeRemoteCert(deviceId: String, cert: SecCertificate) {
         let data = SecCertificateCopyData(cert) as Data
         let url = trustedDir.appendingPathComponent("\(deviceId).der")
         try? data.write(to: url)
     }
 
+    public func storeRemoteCertDER(deviceId: String, der: Data) {
+        let url = trustedDir.appendingPathComponent("\(deviceId).der")
+        try? der.write(to: url)
+    }
+
     public func loadRemoteCert(deviceId: String) -> SecCertificate? {
         let url = trustedDir.appendingPathComponent("\(deviceId).der")
         guard let data = try? Data(contentsOf: url) else { return nil }
         return SecCertificateCreateWithData(nil, data as CFData)
+    }
+
+    public func loadRemoteCertDER(deviceId: String) -> Data? {
+        let url = trustedDir.appendingPathComponent("\(deviceId).der")
+        return try? Data(contentsOf: url)
     }
 
     public func deleteRemoteCert(deviceId: String) {
@@ -95,6 +108,10 @@ public final class CertificateService: @unchecked Sendable {
     public func sha256Fingerprint(of cert: SecCertificate) -> String {
         let data = SecCertificateCopyData(cert) as Data
         return data.sha256Hex
+    }
+
+    public func sha256Fingerprint(ofDER der: Data) -> String {
+        return der.sha256Hex
     }
 
     @discardableResult

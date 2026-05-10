@@ -1,25 +1,24 @@
 import Foundation
 import Network
+import NIOCore
 import Darwin
 
-/// Owns UDP discovery + TCP server. Discovers peers, opens links.
+/// Owns UDP discovery + TCP server. Discovers peers and creates secure links.
 ///
-/// Status: protocol v0 of MacConnect implements UDP discovery and plain-TCP
-/// identity exchange only. TLS upgrade (KDE Connect's startTLS-after-identity
-/// pattern) is the next milestone — see ``upgradeTLS(_:role:)``.
+/// Discovery is via UDP broadcast (subnet-directed + 255.255.255.255) on port
+/// 1716. Each link's plain-TCP-then-TLS handshake is implemented in
+/// ``KDEConnectChannelHandler``.
 public final class LanLinkProvider: @unchecked Sendable {
     public static let shared = LanLinkProvider()
 
     private let queue = DispatchQueue(label: "macconnect.lanprovider")
     private var udpListener: NWListener?
-    private var tcpListener: NWListener?
+    private var serverChannel: Channel?
     private var tcpPort: UInt16 = Settings.minTCPPort
     private var broadcastTimer: DispatchSourceTimer?
+    private var linksByChannelID: [ObjectIdentifier: (deviceId: String, link: LanLink)] = [:]
 
-    /// Interval between repeated identity broadcasts. KDE Connect Android
-    /// rebroadcasts on network change; we emit on a short timer too so phones
-    /// that join the network mid-session (or that were briefly off-Wi-Fi)
-    /// pick us up without a manual refresh.
+    /// Interval between repeated identity broadcasts.
     public static let broadcastInterval: TimeInterval = 5
 
     private let _onIdentityCallback: AtomicBox<(IdentityPayload, LanLink) -> Void> = .init({ _, _ in })
@@ -32,7 +31,25 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     public func start() throws {
         try CertificateService.shared.ensureIdentity()
-        try startTCPListener()
+        let (channel, port) = try NIOTransport.shared.startListener(
+            portRange: Settings.minTCPPort...Settings.maxTCPPort,
+            onIdentity: { [weak self] identity, channel in
+                self?.handleIdentity(identity, channel: channel)
+            },
+            onPacket: { [weak self] packet, channel in
+                self?.handlePacket(packet, channel: channel)
+            },
+            onSecured: { [weak self] channel in
+                self?.handleSecured(channel: channel)
+            },
+            onClose: { [weak self] channel, _ in
+                self?.handleClosed(channel: channel)
+            }
+        )
+        self.serverChannel = channel
+        self.tcpPort = port
+        Log.net.info("TCP listener on \(port, privacy: .public)")
+
         try startUDPListener()
         startBroadcastTimer()
         broadcastIdentity()
@@ -42,9 +59,9 @@ public final class LanLinkProvider: @unchecked Sendable {
         broadcastTimer?.cancel()
         broadcastTimer = nil
         udpListener?.cancel()
-        tcpListener?.cancel()
         udpListener = nil
-        tcpListener = nil
+        try? serverChannel?.close().wait()
+        serverChannel = nil
     }
 
     public func refresh() {
@@ -62,110 +79,77 @@ public final class LanLinkProvider: @unchecked Sendable {
         broadcastTimer = timer
     }
 
-    // MARK: TCP server
+    // MARK: - Channel callbacks
 
-    private func startTCPListener() throws {
-        // NWListener bind failures arrive asynchronously via stateUpdateHandler,
-        // so we attempt each port and wait synchronously for it to become
-        // .ready or .failed before deciding whether to walk to the next.
-        for port in Settings.minTCPPort...Settings.maxTCPPort {
-            let semaphore = DispatchSemaphore(value: 0)
-            var didFail = false
-            var listener: NWListener?
-            do {
-                let params = NWParameters.tcp
-                let nwPort = NWEndpoint.Port(rawValue: port)!
-                let l = try NWListener(using: params, on: nwPort)
-                l.newConnectionHandler = { [weak self] conn in
-                    self?.handleIncomingTCP(conn)
+    private func handleIdentity(_ identity: IdentityPayload, channel: Channel) {
+        Log.net.info("Identity from \(identity.deviceName, privacy: .public) (\(identity.deviceId, privacy: .public))")
+        let link = LanLink(
+            deviceId: identity.deviceId,
+            channel: channel,
+            onPacket: { [weak self] packet in
+                Task { @MainActor in
+                    self?.dispatch(packet, identity: identity)
                 }
-                l.stateUpdateHandler = { state in
-                    switch state {
-                    case .ready:
-                        semaphore.signal()
-                    case .failed(let err):
-                        Log.net.error("TCP listener bind \(port, privacy: .public) failed: \(err.localizedDescription, privacy: .public)")
-                        didFail = true
-                        semaphore.signal()
-                    case .cancelled:
-                        semaphore.signal()
-                    default: break
-                    }
+            },
+            onClose: {
+                Task { @MainActor in
+                    DeviceManager.shared.detach(deviceId: identity.deviceId)
                 }
-                l.start(queue: queue)
-                listener = l
-            } catch {
-                continue
             }
+        )
+        linksByChannelID[ObjectIdentifier(channel)] = (identity.deviceId, link)
+        // Make device known but NOT reachable yet — that flips on TLS up.
+        Task { @MainActor in
+            _ = DeviceManager.shared.upsert(identity: identity)
+        }
+        _onIdentityCallback.value(identity, link)
+    }
 
-            // Bound wait — if neither .ready nor .failed lands fast, treat as failed.
-            let result = semaphore.wait(timeout: .now() + 1.0)
-            if result == .timedOut || didFail {
-                listener?.cancel()
-                continue
-            }
-            self.tcpListener = listener
-            self.tcpPort = port
-            Log.net.info("TCP listener on \(port, privacy: .public)")
+    private func handlePacket(_ packet: NetworkPacket, channel: Channel) {
+        guard let entry = linksByChannelID[ObjectIdentifier(channel)] else {
+            Log.net.warning("Packet on unknown channel; dropping")
             return
         }
-        throw NSError(domain: "MacConnect.Net", code: 1,
-                      userInfo: [NSLocalizedDescriptionKey: "No free TCP port in range \(Settings.minTCPPort)-\(Settings.maxTCPPort)"])
+        entry.link.deliverPacket(packet)
     }
 
-    private func handleIncomingTCP(_ conn: NWConnection) {
-        // Phase 1: receive plain-TCP identity packet
-        // Phase 2 (TODO): startTLS as server, requiring client cert
-        conn.start(queue: queue)
-        readIdentity(from: conn) { [weak self] identity in
-            guard let self, let identity else {
-                conn.cancel()
-                return
-            }
-            Log.net.info("Incoming TCP identity from \(identity.deviceName, privacy: .public)")
-            let link = LanLink(
-                deviceId: identity.deviceId,
-                connection: conn,
-                onPacket: { packet in
-                    self.dispatch(packet, identity: identity)
-                },
-                onClose: {
-                    Task { @MainActor in DeviceManager.shared.detach(deviceId: identity.deviceId) }
-                }
-            )
-            self._onIdentityCallback.value(identity, link)
-            link.start()
+    private func handleSecured(channel: Channel) {
+        guard let entry = linksByChannelID[ObjectIdentifier(channel)] else { return }
+        entry.link.isSecure = true
+        Log.net.info("Link secured: \(entry.deviceId, privacy: .public)")
+        Task { @MainActor in
+            DeviceManager.shared.attach(link: entry.link, to: entry.deviceId)
         }
     }
 
-    private func readIdentity(from conn: NWConnection, completion: @escaping (IdentityPayload?) -> Void) {
-        var buffer = Data()
-        func readMore() {
-            conn.receive(minimumIncompleteLength: 1, maximumLength: 8192) { data, _, isComplete, err in
-                if let data, !data.isEmpty {
-                    buffer.append(data)
-                    if let lf = buffer.firstIndex(of: 0x0A) {
-                        let line = buffer.subdata(in: buffer.startIndex..<lf)
-                        if let packet = try? NetworkPacket.parse(line),
-                           let id = IdentityPayload.from(packet: packet) {
-                            completion(id)
-                            return
-                        }
-                        completion(nil)
-                        return
-                    }
-                }
-                if isComplete || err != nil {
-                    completion(nil)
-                    return
-                }
-                readMore()
-            }
-        }
-        readMore()
+    private func handleClosed(channel: Channel) {
+        guard let entry = linksByChannelID.removeValue(forKey: ObjectIdentifier(channel)) else { return }
+        entry.link.notifyClosed()
     }
 
-    // MARK: UDP discovery
+    @MainActor
+    private func dispatch(_ packet: NetworkPacket, identity: IdentityPayload) {
+        let device = DeviceManager.shared.upsert(identity: identity)
+        if packet.type == PacketType.pair {
+            handlePairPacket(packet, device: device)
+            return
+        }
+        guard Settings.shared.isTrusted(device.id) else {
+            Log.pair.notice("Dropping \(packet.type, privacy: .public) from untrusted \(device.id, privacy: .public)")
+            return
+        }
+        Task { @MainActor in
+            await PluginRegistry.shared.dispatch(packet, from: device)
+        }
+    }
+
+    @MainActor
+    private func handlePairPacket(_ packet: NetworkPacket, device: Device) {
+        let accept = packet.body["pair"]?.boolValue ?? false
+        DeviceManager.shared.didReceivePairPacket(accept: accept, device: device)
+    }
+
+    // MARK: - UDP discovery
 
     private func startUDPListener() throws {
         let params = NWParameters.udp
@@ -194,64 +178,59 @@ public final class LanLinkProvider: @unchecked Sendable {
     private func handleUDPIdentity(_ data: Data, from endpoint: NWEndpoint) {
         let payload = data.last == 0x0A ? data.dropLast() : data
         guard let packet = try? NetworkPacket.parse(payload),
-              let identity = IdentityPayload.from(packet: packet) else {
-            return
-        }
-        if identity.deviceId == Settings.shared.deviceId {
-            return // our own broadcast
-        }
-        Log.net.info("UDP identity from \(identity.deviceName, privacy: .public) (\(identity.deviceId, privacy: .public))")
-        // Connect to peer's TCP port to complete handshake
+              let identity = IdentityPayload.from(packet: packet) else { return }
+        if identity.deviceId == Settings.shared.deviceId { return }
+        Log.net.debug("UDP identity from \(identity.deviceName, privacy: .public)")
+
         guard let port = identity.tcpPort, (1714...1764).contains(port) else { return }
         guard case .hostPort(let host, _) = endpoint else { return }
-        connectAndSendIdentity(host: host, port: NWEndpoint.Port(rawValue: UInt16(port))!, peerIdentity: identity)
-    }
-
-    private func connectAndSendIdentity(host: NWEndpoint.Host, port: NWEndpoint.Port, peerIdentity: IdentityPayload) {
-        let conn = NWConnection(host: host, port: port, using: .tcp)
-        conn.stateUpdateHandler = { [weak self] state in
-            guard let self else { return }
-            switch state {
-            case .ready:
-                let identity = Settings.shared.ownIdentity(tcpPort: Int(self.tcpPort))
-                if let data = try? identity.toPacket().serialized() {
-                    conn.send(content: data, completion: .contentProcessed { _ in })
-                }
-                // TODO: After this write completes, this is where we would startTLS
-                // as the TLS client. Tracked in TODO.md.
-                let link = LanLink(
-                    deviceId: peerIdentity.deviceId,
-                    connection: conn,
-                    onPacket: { packet in
-                        self.dispatch(packet, identity: peerIdentity)
-                    },
-                    onClose: {
-                        Task { @MainActor in DeviceManager.shared.detach(deviceId: peerIdentity.deviceId) }
-                    }
-                )
-                self._onIdentityCallback.value(peerIdentity, link)
-                link.start()
-            case .failed(let err):
-                Log.net.error("Outbound TCP failed: \(err.localizedDescription, privacy: .public)")
-            default: break
-            }
+        let hostStr: String
+        switch host {
+        case .ipv4(let ip): hostStr = "\(ip)"
+        case .ipv6(let ip): hostStr = "\(ip)"
+        case .name(let n, _): hostStr = n
+        @unknown default: return
         }
-        conn.start(queue: queue)
+
+        // Avoid double-connecting if we already have a link for this device
+        let alreadyLinked = linksByChannelID.values.contains(where: { $0.deviceId == identity.deviceId })
+        if alreadyLinked { return }
+
+        Log.net.info("Connecting to \(identity.deviceName, privacy: .public) at \(hostStr, privacy: .public):\(port, privacy: .public)")
+
+        let future = NIOTransport.shared.connect(
+            host: hostStr,
+            port: UInt16(port),
+            peerIdentity: identity,
+            onPacket: { [weak self] packet, channel in
+                self?.handlePacket(packet, channel: channel)
+            },
+            onSecured: { [weak self] channel in
+                self?.handleSecured(channel: channel)
+            },
+            onClose: { [weak self] channel, _ in
+                self?.handleClosed(channel: channel)
+            }
+        )
+        future.whenSuccess { [weak self] channel in
+            // For outbound, the handler already knows peer identity; register the link now.
+            self?.handleIdentity(identity, channel: channel)
+        }
+        future.whenFailure { err in
+            Log.net.error("Outbound connect failed to \(hostStr, privacy: .public): \(err.localizedDescription, privacy: .public)")
+        }
     }
 
-    // MARK: UDP broadcast
+    // MARK: - UDP broadcast
 
     public func broadcastIdentity() {
-        guard tcpListener != nil else { return }
+        guard serverChannel != nil else { return }
         let identity = Settings.shared.ownIdentity(tcpPort: Int(tcpPort))
         guard let data = try? identity.toPacket().serialized() else { return }
 
-        // Compute subnet-directed broadcast targets per active interface.
-        // Limited broadcast (255.255.255.255) is filtered by many Wi-Fi APs;
-        // 192.168.x.255 traverses the local segment reliably.
         let interfaces = NetworkInterfaces.ipv4Broadcasts()
         var targets = Set(interfaces.map(\.broadcast))
-        targets.insert("255.255.255.255") // belt + suspenders
+        targets.insert("255.255.255.255")
         if interfaces.isEmpty {
             Log.net.warning("No broadcast-capable IPv4 interfaces found")
         }
@@ -287,42 +266,7 @@ public final class LanLinkProvider: @unchecked Sendable {
                 ok += 1
             }
         }
-        Log.net.debug("Broadcast identity to \(ok, privacy: .public) target(s) (\(targets.count, privacy: .public) attempted)")
-    }
-
-    // MARK: Dispatch
-
-    private func dispatch(_ packet: NetworkPacket, identity: IdentityPayload) {
-        Task { @MainActor in
-            let device = DeviceManager.shared.upsert(identity: identity)
-            // Pair packet handling first (before plugins)
-            if packet.type == PacketType.pair {
-                self.handlePairPacket(packet, device: device)
-                return
-            }
-            // Plugins only run for trusted devices
-            guard Settings.shared.isTrusted(device.id) else {
-                Log.pair.notice("Dropping \(packet.type, privacy: .public) from untrusted \(device.id, privacy: .public)")
-                return
-            }
-            await PluginRegistry.shared.dispatch(packet, from: device)
-        }
-    }
-
-    @MainActor
-    private func handlePairPacket(_ packet: NetworkPacket, device: Device) {
-        let pair = packet.body["pair"]?.boolValue ?? false
-        if pair {
-            // Pair request — surface to user
-            device.pairRequestPending = true
-            DeviceManager.shared.objectWillChange.send()
-        } else {
-            // Unpair / rejection
-            Settings.shared.unmarkTrusted(device.id)
-            device.isPaired = false
-            device.pairRequestPending = false
-            DeviceManager.shared.objectWillChange.send()
-        }
+        Log.net.debug("Broadcast identity to \(ok, privacy: .public) target(s)")
     }
 }
 
