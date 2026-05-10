@@ -16,7 +16,9 @@ public final class LanLinkProvider: @unchecked Sendable {
     private var serverChannel: Channel?
     private var tcpPort: UInt16 = Settings.minTCPPort
     private var broadcastTimer: DispatchSourceTimer?
-    private var linksByChannelID: [ObjectIdentifier: (deviceId: String, link: LanLink)] = [:]
+    private let linkLock = NSLock()
+    private var channelToDeviceId: [ObjectIdentifier: String] = [:]
+    private var linksByDeviceId: [String: LanLink] = [:]
 
     /// Interval between repeated identity broadcasts.
     public static let broadcastInterval: TimeInterval = 5
@@ -83,6 +85,23 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     private func handleIdentity(_ identity: IdentityPayload, channel: Channel) {
         Log.net.info("Identity from \(identity.deviceName, privacy: .public) (\(identity.deviceId, privacy: .public))")
+        linkLock.lock()
+        if let existing = linksByDeviceId[identity.deviceId] {
+            // Already have a link for this device; replace the underlying
+            // channel so we always send on the newest connection (matches
+            // KDE Connect's per-deviceId socket-replacement semantics).
+            let oldChannel = existing.activeChannel
+            existing.replaceChannel(with: channel)
+            channelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
+            channelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
+            linkLock.unlock()
+            Log.net.info("Replaced channel for existing link \(identity.deviceId, privacy: .public)")
+            Task { @MainActor in
+                _ = DeviceManager.shared.upsert(identity: identity)
+            }
+            _onIdentityCallback.value(identity, existing)
+            return
+        }
         let link = LanLink(
             deviceId: identity.deviceId,
             channel: channel,
@@ -91,14 +110,18 @@ public final class LanLinkProvider: @unchecked Sendable {
                     self?.dispatch(packet, identity: identity)
                 }
             },
-            onClose: {
+            onClose: { [weak self] in
+                self?.linkLock.lock()
+                self?.linksByDeviceId.removeValue(forKey: identity.deviceId)
+                self?.linkLock.unlock()
                 Task { @MainActor in
                     DeviceManager.shared.detach(deviceId: identity.deviceId)
                 }
             }
         )
-        linksByChannelID[ObjectIdentifier(channel)] = (identity.deviceId, link)
-        // Make device known but NOT reachable yet — that flips on TLS up.
+        linksByDeviceId[identity.deviceId] = link
+        channelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
+        linkLock.unlock()
         Task { @MainActor in
             _ = DeviceManager.shared.upsert(identity: identity)
         }
@@ -106,25 +129,50 @@ public final class LanLinkProvider: @unchecked Sendable {
     }
 
     private func handlePacket(_ packet: NetworkPacket, channel: Channel) {
-        guard let entry = linksByChannelID[ObjectIdentifier(channel)] else {
-            Log.net.warning("Packet on unknown channel; dropping")
+        linkLock.lock()
+        let deviceId = channelToDeviceId[ObjectIdentifier(channel)]
+        let link = deviceId.flatMap { linksByDeviceId[$0] }
+        linkLock.unlock()
+        guard let link else {
+            Log.net.warning("Packet on unknown channel; dropping (\(packet.type, privacy: .public))")
             return
         }
-        entry.link.deliverPacket(packet)
+        link.deliverPacket(packet)
     }
 
     private func handleSecured(channel: Channel) {
-        guard let entry = linksByChannelID[ObjectIdentifier(channel)] else { return }
-        entry.link.isSecure = true
-        Log.net.info("Link secured: \(entry.deviceId, privacy: .public)")
+        linkLock.lock()
+        guard let deviceId = channelToDeviceId[ObjectIdentifier(channel)],
+              let link = linksByDeviceId[deviceId] else {
+            linkLock.unlock()
+            return
+        }
+        link.isSecure = true
+        linkLock.unlock()
+        Log.net.info("Link secured: \(deviceId, privacy: .public)")
         Task { @MainActor in
-            DeviceManager.shared.attach(link: entry.link, to: entry.deviceId)
+            DeviceManager.shared.attach(link: link, to: deviceId)
         }
     }
 
     private func handleClosed(channel: Channel) {
-        guard let entry = linksByChannelID.removeValue(forKey: ObjectIdentifier(channel)) else { return }
-        entry.link.notifyClosed()
+        linkLock.lock()
+        guard let deviceId = channelToDeviceId.removeValue(forKey: ObjectIdentifier(channel)) else {
+            linkLock.unlock()
+            return
+        }
+        // Only tear down the device link if THIS channel is still the active one
+        // for that device. If it was already replaced, this is the old socket
+        // closing — don't disconnect the device.
+        let link = linksByDeviceId[deviceId]
+        let isActive = link?.activeChannel === channel
+        if isActive {
+            linksByDeviceId.removeValue(forKey: deviceId)
+        }
+        linkLock.unlock()
+        if isActive {
+            link?.notifyClosed()
+        }
     }
 
     @MainActor
@@ -192,9 +240,11 @@ public final class LanLinkProvider: @unchecked Sendable {
         @unknown default: return
         }
 
-        // Avoid double-connecting if we already have a link for this device
-        let alreadyLinked = linksByChannelID.values.contains(where: { $0.deviceId == identity.deviceId })
-        if alreadyLinked { return }
+        // Avoid double-connecting if we already have a secured link
+        linkLock.lock()
+        let existing = linksByDeviceId[identity.deviceId]
+        linkLock.unlock()
+        if let existing, existing.isSecure { return }
 
         Log.net.info("Connecting to \(identity.deviceName, privacy: .public) at \(hostStr, privacy: .public):\(port, privacy: .public)")
 

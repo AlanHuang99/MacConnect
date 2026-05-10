@@ -1,8 +1,10 @@
 # MacConnect — Roadmap
 
-## Milestone 1: TLS upgrade + pairing (current blocker)
+## ✅ Milestone 1 (DONE): TLS upgrade + pairing
 
-Without TLS, paired devices and unpaired devices cannot complete the handshake, so plugins cannot fire. This is the single highest-value next step.
+Landed in commit `70f0ca6` (2026-05-10). TCP transport switched from Apple's Network framework to swift-nio + swift-nio-ssl. Plain-TCP identity exchange followed by mutual-TLS upgrade with custom TOFU/pinning verification works end-to-end against KDE Connect Android, KDE Connect macOS (official), and KDE Connect Linux peers.
+
+### Original notes (kept for context)
 
 **The problem:** KDE Connect's protocol sends an identity packet over plain TCP, then both sides upgrade the same socket to TLS via `startTLS`. Apple's `NWConnection` does **not** support adding TLS to an existing connection — TLS is configured at construction time.
 
