@@ -74,6 +74,19 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <string>MacConnect discovers KDE Connect devices on your local network.</string>
     <key>NSBonjourServices</key>
     <array><string>_kdeconnect._udp</string></array>
+    <key>NSServices</key>
+    <array>
+        <dict>
+            <key>NSMenuItem</key>
+            <dict><key>default</key><string>Send via MacConnect</string></dict>
+            <key>NSMessage</key>
+            <string>sendFileToDevice</string>
+            <key>NSPortName</key>
+            <string>MacConnect</string>
+            <key>NSSendTypes</key>
+            <array><string>public.file-url</string></array>
+        </dict>
+    </array>
 </dict>
 </plist>
 EOF

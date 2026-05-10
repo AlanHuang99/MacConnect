@@ -18,14 +18,15 @@ Working features:
   - Share (URL, text, and file payload — send and receive over a second TLS connection).
 - Menu-bar UI with a popover that lists discovered devices, their pair status, last-seen age for offline peers, and per-device actions.
 - Settings panel: editable broadcast name, SHA-256 fingerprint display (local + per pinned peer), per-plugin enable/disable toggles, Launch-at-Login toggle, pinned-device list with Forget action.
+- "Send via MacConnect" Finder Services entry (right-click any file → Services → Send via MacConnect → pick a paired device).
+- mDNS / Bonjour discovery (`_kdeconnect._udp`) alongside legacy UDP broadcast — finds peers across access points and on networks where broadcast is filtered.
 - Distribution: Release workflow builds a universal binary, signs with Apple Developer ID + Hardened Runtime, notarizes via App Store Connect API key, staples the ticket, and publishes a `.dmg` + `.zip` to a GitHub Release.
 
 Not implemented yet:
 
-- mDNS / Bonjour announcement (only legacy UDP broadcast is used).
+- macOS Share Extension proper (the modern Share sheet entry). The current Services menu integration is the practical equivalent; a real `.appex` Share Extension requires app-extension build tooling that SwiftPM doesn't support natively.
 - MPRIS state parsing (packets are received but no media UI).
-- macOS Share Extension (right-click → Share → MacConnect from Finder).
-- Clipboard image transfer.
+- Clipboard image transfer (pending KDE Connect protocol alignment across implementations).
 
 See [`ROADMAP.md`](ROADMAP.md) for upcoming work.
 
