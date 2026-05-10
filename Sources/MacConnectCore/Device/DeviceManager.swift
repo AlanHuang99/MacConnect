@@ -59,7 +59,30 @@ public final class DeviceManager: ObservableObject {
         Settings.shared.unmarkTrusted(device.id)
         CertificateService.shared.deleteRemoteCert(deviceId: device.id)
         device.isPaired = false
+        device.pinMismatch = false
         device.send(PairPacketBuilder.response(accept: false))
+        objectWillChange.send()
+    }
+
+    /// Called from the TLS verifier when a paired peer presents a cert that
+    /// no longer matches our stored pin. We surface this in the UI so the
+    /// user can choose to reset trust (cleanly re-TOFU) rather than the link
+    /// silently failing forever.
+    public func flagPinMismatch(deviceId: String) {
+        guard let device = devices[deviceId] else { return }
+        device.pinMismatch = true
+        objectWillChange.send()
+    }
+
+    /// Drop the pin and trust for this peer without sending a pair-cancel
+    /// packet (the link is already dead at the TLS layer when this is
+    /// invoked). Next discovery cycle the peer is treated as new and TOFU
+    /// re-runs against its current cert.
+    public func resetTrust(_ device: Device) {
+        Settings.shared.unmarkTrusted(device.id)
+        CertificateService.shared.deleteRemoteCert(deviceId: device.id)
+        device.isPaired = false
+        device.pinMismatch = false
         objectWillChange.send()
     }
 

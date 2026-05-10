@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Binding var isPresented: Bool
     @ObservedObject var settings: MacConnectCore.Settings = .shared
     @State private var nameDraft: String = MacConnectCore.Settings.shared.deviceName
+    @State private var loginItemError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -43,6 +44,21 @@ struct SettingsView: View {
                         Divider()
                         labelValue("Device ID", settings.deviceId)
                         labelValue("Protocol", "v\(Settings.protocolVersion)")
+                        if let fp = CertificateService.shared.localFingerprint() {
+                            labelValue("SHA-256", fp)
+                        }
+                    }
+
+                    section("Startup") {
+                        Toggle("Launch at login", isOn: loginItemBinding)
+                        if let err = loginItemError {
+                            Text(err)
+                                .font(.caption2)
+                                .foregroundStyle(.red)
+                        } else {
+                            Text("App must be in /Applications and signed with Apple Developer ID for this to work.")
+                                .font(.caption2).foregroundStyle(.secondary)
+                        }
                     }
 
                     section("Trusted devices") {
@@ -52,15 +68,7 @@ struct SettingsView: View {
                                 .font(.caption).foregroundStyle(.secondary)
                         } else {
                             ForEach(trusted, id: \.self) { id in
-                                HStack {
-                                    Text(id).font(.system(.caption, design: .monospaced))
-                                    Spacer()
-                                    Button("Forget") {
-                                        MacConnectCore.Settings.shared.unmarkTrusted(id)
-                                        settings.objectWillChange.send()
-                                    }
-                                    .controlSize(.small)
-                                }
+                                trustedDeviceRow(id: id)
                             }
                         }
                     }
@@ -71,12 +79,47 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
+    @ViewBuilder
+    private func trustedDeviceRow(id: String) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack {
+                Text(id).font(.system(.caption, design: .monospaced))
+                Spacer()
+                Button("Forget") {
+                    MacConnectCore.Settings.shared.unmarkTrusted(id)
+                    CertificateService.shared.deleteRemoteCert(deviceId: id)
+                    settings.objectWillChange.send()
+                }
+                .controlSize(.small)
+            }
+            if let fp = CertificateService.shared.fingerprint(forTrustedDeviceId: id) {
+                Text("SHA-256 \(fp)")
+                    .font(.system(.caption2, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+            }
+        }
+    }
+
+    private var loginItemBinding: Binding<Bool> {
+        Binding(
+            get: { LoginItem.isEnabled },
+            set: { newValue in
+                do {
+                    try LoginItem.setEnabled(newValue)
+                    loginItemError = nil
+                } catch {
+                    loginItemError = "Couldn't \(newValue ? "enable" : "disable") launch at login: \(error.localizedDescription)"
+                }
+            }
+        )
+    }
+
     private func commitName() {
         let trimmed = nameDraft.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty, trimmed != settings.deviceName else { return }
         MacConnectCore.Settings.shared.deviceName = trimmed
         nameDraft = settings.deviceName
-        // Re-broadcast immediately so peers see the new name
         LanLinkProvider.shared.refresh()
     }
 
@@ -94,6 +137,7 @@ struct SettingsView: View {
             Spacer()
             Text(value).font(.system(.caption, design: .monospaced))
                 .lineLimit(1).truncationMode(.middle)
+                .textSelection(.enabled)
         }
     }
 }

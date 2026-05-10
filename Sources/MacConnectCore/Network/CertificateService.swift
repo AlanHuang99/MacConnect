@@ -83,6 +83,45 @@ public final class CertificateService: @unchecked Sendable {
         SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
     }
 
+    /// SHA-256 fingerprint of the local cert, formatted with colons
+    /// (`aa:bb:cc:...`) so users can read it aloud or compare visually
+    /// against another KDE Connect implementation's display.
+    public func localFingerprint() -> String? {
+        guard let der = localCertDER() else { return nil }
+        let hex = sha256Fingerprint(ofDER: der)
+        return Self.colonGroupedHex(hex)
+    }
+
+    public func fingerprint(forTrustedDeviceId deviceId: String) -> String? {
+        guard let der = loadRemoteCertDER(deviceId: deviceId) else { return nil }
+        let hex = sha256Fingerprint(ofDER: der)
+        return Self.colonGroupedHex(hex)
+    }
+
+    private func localCertDER() -> Data? {
+        guard let pemData = try? Data(contentsOf: certURL),
+              let pemString = String(data: pemData, encoding: .utf8) else {
+            return nil
+        }
+        let base64 = pemString
+            .components(separatedBy: .newlines)
+            .filter { !$0.hasPrefix("-----") && !$0.isEmpty }
+            .joined()
+        return Data(base64Encoded: base64)
+    }
+
+    private static func colonGroupedHex(_ hex: String) -> String {
+        var out = ""
+        var i = hex.startIndex
+        while i < hex.endIndex {
+            let j = hex.index(i, offsetBy: 2, limitedBy: hex.endIndex) ?? hex.endIndex
+            if !out.isEmpty { out.append(":") }
+            out.append(contentsOf: hex[i..<j])
+            i = j
+        }
+        return out
+    }
+
     @discardableResult
     private func runProcess(_ exec: String, _ args: [String]) throws -> String {
         let p = Process()

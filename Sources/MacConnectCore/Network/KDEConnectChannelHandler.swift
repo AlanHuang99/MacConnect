@@ -174,6 +174,9 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
                 promise.succeed(.certificateVerified)
             case .pinnedMismatch:
                 Log.pair.error("Peer cert MISMATCH for \(deviceId, privacy: .public) — refusing")
+                Task { @MainActor in
+                    DeviceManager.shared.flagPinMismatch(deviceId: deviceId)
+                }
                 promise.succeed(.failed)
             case .missing:
                 Log.pair.error("Peer presented no cert")
