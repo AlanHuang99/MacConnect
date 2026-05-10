@@ -47,6 +47,13 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$RES"
 cp "$BIN_PATH" "$MACOS/MacConnect"
 
+ICON_SRC="$ROOT/resources/AppIcon.icns"
+if [[ ! -f "$ICON_SRC" ]]; then
+  echo ">> Icon not found; generating via scripts/make-icon.swift"
+  (cd "$ROOT" && ./scripts/make-icon.swift)
+fi
+cp "$ICON_SRC" "$RES/AppIcon.icns"
+
 cat > "$CONTENTS/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -56,6 +63,7 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <key>CFBundleDisplayName</key><string>MacConnect</string>
     <key>CFBundleIdentifier</key><string>org.macconnect.MacConnect</string>
     <key>CFBundleExecutable</key><string>MacConnect</string>
+    <key>CFBundleIconFile</key><string>AppIcon</string>
     <key>CFBundlePackageType</key><string>APPL</string>
     <key>CFBundleShortVersionString</key><string>${VERSION}</string>
     <key>CFBundleVersion</key><string>${VERSION}</string>

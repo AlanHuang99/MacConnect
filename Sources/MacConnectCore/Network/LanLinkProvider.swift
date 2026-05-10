@@ -64,6 +64,25 @@ public final class LanLinkProvider: @unchecked Sendable {
         broadcastIdentity()
     }
 
+    private func isLocalAddress(_ remote: SocketAddress) -> Bool {
+        let host: String
+        switch remote {
+        case .v4(let v4):
+            var addr = v4.address.sin_addr
+            var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            inet_ntop(AF_INET, &addr, &buf, socklen_t(buf.count))
+            host = String(cString: buf)
+        case .v6(let v6):
+            var addr = v6.address.sin6_addr
+            var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+            inet_ntop(AF_INET6, &addr, &buf, socklen_t(buf.count))
+            host = String(cString: buf)
+        case .unixDomainSocket:
+            return false
+        }
+        return NetworkInterfaces.localIPv4Addresses().contains(host)
+    }
+
     /// Look up the peer's IP for an active link, used for opening payload
     /// connections back to the same peer.
     public func peerHost(for deviceId: String) -> String? {
@@ -101,6 +120,19 @@ public final class LanLinkProvider: @unchecked Sendable {
     // MARK: - Channel callbacks
 
     private func handleIdentity(_ identity: IdentityPayload, channel: Channel) {
+        // Same defence as in UDP discovery: reject any inbound TCP from one
+        // of our own interface IPs. Catches the case where another
+        // KDE Connect implementation on the same Mac is connecting to us.
+        if let remote = channel.remoteAddress, isLocalAddress(remote) {
+            Log.net.debug("Ignoring TCP identity from local address; closing")
+            channel.close(promise: nil)
+            return
+        }
+        if identity.deviceId == Settings.shared.deviceId {
+            Log.net.debug("Ignoring TCP identity matching our own deviceId; closing")
+            channel.close(promise: nil)
+            return
+        }
         Log.net.info("Identity from \(identity.deviceName, privacy: .public) (\(identity.deviceId, privacy: .public))")
         linkLock.lock()
         if let existing = linksByDeviceId[identity.deviceId] {
@@ -251,7 +283,6 @@ public final class LanLinkProvider: @unchecked Sendable {
         guard let packet = try? NetworkPacket.parse(payload),
               let identity = IdentityPayload.from(packet: packet) else { return }
         if identity.deviceId == Settings.shared.deviceId { return }
-        Log.net.debug("UDP identity from \(identity.deviceName, privacy: .public)")
 
         guard let port = identity.tcpPort, (1714...1764).contains(port) else { return }
         guard case .hostPort(let host, _) = endpoint else { return }
@@ -262,6 +293,17 @@ public final class LanLinkProvider: @unchecked Sendable {
         case .name(let n, _): hostStr = n
         @unknown default: return
         }
+
+        // Reject broadcasts that originate from one of our own interface
+        // addresses. Another KDE Connect implementation running on the same
+        // machine has a different deviceId from ours but reaches us as a
+        // loopback peer; without this, MacConnect would list its host as a
+        // remote device.
+        if NetworkInterfaces.localIPv4Addresses().contains(hostStr) {
+            Log.net.debug("Ignoring UDP identity from local address \(hostStr, privacy: .public)")
+            return
+        }
+        Log.net.debug("UDP identity from \(identity.deviceName, privacy: .public)")
 
         // Avoid double-connecting if we already have a secured link
         linkLock.lock()

@@ -43,6 +43,28 @@ public enum NetworkInterfaces {
         return results
     }
 
+    /// All IPv4 addresses currently configured on the host, including
+    /// loopback. Used to recognise broadcasts and connections that originate
+    /// on the same machine (e.g. another KDE Connect implementation running
+    /// alongside us) so we don't list ourselves.
+    public static func localIPv4Addresses() -> Set<String> {
+        var addrs: UnsafeMutablePointer<ifaddrs>?
+        guard getifaddrs(&addrs) == 0, addrs != nil else { return [] }
+        defer { freeifaddrs(addrs) }
+
+        var results: Set<String> = []
+        var ptr = addrs
+        while let cur = ptr {
+            defer { ptr = cur.pointee.ifa_next }
+            guard let addrPtr = cur.pointee.ifa_addr,
+                  addrPtr.pointee.sa_family == sa_family_t(AF_INET) else { continue }
+            if let s = sockaddrToString(addrPtr) {
+                results.insert(s)
+            }
+        }
+        return results
+    }
+
     private static func sockaddrToString(_ sa: UnsafeMutablePointer<sockaddr>) -> String? {
         var host = [CChar](repeating: 0, count: Int(NI_MAXHOST))
         let len = socklen_t(MemoryLayout<sockaddr_in>.size)
