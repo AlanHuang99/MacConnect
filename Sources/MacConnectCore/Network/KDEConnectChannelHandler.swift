@@ -104,7 +104,11 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
     }
 
     public func errorCaught(context: ChannelHandlerContext, error: Error) {
-        Log.net.error("Channel error \(self.peerDeviceId ?? "?", privacy: .public): \(error.localizedDescription, privacy: .public)")
+        // Log the concrete error case (e.g. "uncleanShutdown") rather than the
+        // bridged NSError "operation couldn't be completed" generic. This is
+        // crucial for diagnosing post-handshake drops on KDE Connect peers.
+        let detail = String(reflecting: error)
+        Log.net.error("Channel error \(self.peerDeviceId ?? "?", privacy: .public): \(detail, privacy: .public)")
         onClose(error)
         context.close(promise: nil)
     }

@@ -8,34 +8,35 @@ struct StatusView: View {
 
     var body: some View {
         ZStack {
-            VStack(alignment: .leading, spacing: 0) {
-                header
-                Divider()
-                if manager.deviceList().isEmpty {
-                    empty
-                } else {
-                    ScrollView {
-                        VStack(alignment: .leading, spacing: 8) {
-                            ForEach(manager.deviceList()) { device in
-                                DeviceRow(device: device)
-                                Divider()
-                            }
-                        }
-                        .padding(.vertical, 8)
-                    }
-                }
-                Divider()
-                footer
-            }
-            .opacity(showingSettings ? 0 : 1)
-
             if showingSettings {
                 SettingsView(isPresented: $showingSettings)
                     .background(Color(NSColor.windowBackgroundColor))
+                    .transition(.opacity)
+            } else {
+                VStack(alignment: .leading, spacing: 0) {
+                    header
+                    Divider()
+                    if manager.deviceList().isEmpty {
+                        empty
+                    } else {
+                        ScrollView {
+                            VStack(alignment: .leading, spacing: 8) {
+                                ForEach(manager.deviceList()) { device in
+                                    DeviceRow(device: device)
+                                    Divider()
+                                }
+                            }
+                            .padding(.vertical, 8)
+                        }
+                    }
+                    Divider()
+                    footer
+                }
+                .transition(.opacity)
             }
         }
         .frame(width: 360, height: 500)
-        .animation(.easeInOut(duration: 0.15), value: showingSettings)
+        .animation(.easeInOut(duration: 0.12), value: showingSettings)
     }
 
     private var header: some View {

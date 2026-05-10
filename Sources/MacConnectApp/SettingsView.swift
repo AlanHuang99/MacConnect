@@ -8,18 +8,18 @@ struct SettingsView: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack {
-                Button {
-                    isPresented = false
-                } label: {
-                    Image(systemName: "chevron.left")
-                    Text("Back")
+            ZStack {
+                HStack {
+                    Button {
+                        isPresented = false
+                    } label: {
+                        Image(systemName: "chevron.left")
+                        Text("Back")
+                    }
+                    .buttonStyle(.borderless)
+                    Spacer()
                 }
-                .buttonStyle(.borderless)
-                Spacer()
                 Text("Settings").font(.headline)
-                Spacer()
-                Color.clear.frame(width: 60)
             }
             .padding(12)
             Divider()
@@ -68,6 +68,7 @@ struct SettingsView: View {
                 .padding(12)
             }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
     private func commitName() {
