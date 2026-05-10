@@ -123,14 +123,20 @@ public final class LanLinkProvider: @unchecked Sendable {
             deviceId: identity.deviceId,
             channel: channel,
             onPacket: { [weak self] packet in
+                // Re-bind to a let so the inner Task does not capture an
+                // optional reference to `self` from the outer closure
+                // (which strict-concurrency checking on Swift 5.10 treats as
+                // a concurrent read of a captured var).
+                let provider = self
                 Task { @MainActor in
-                    self?.dispatch(packet, identity: identity)
+                    provider?.dispatch(packet, identity: identity)
                 }
             },
             onClose: { [weak self] in
-                self?.linkLock.lock()
-                self?.linksByDeviceId.removeValue(forKey: identity.deviceId)
-                self?.linkLock.unlock()
+                let provider = self
+                provider?.linkLock.lock()
+                provider?.linksByDeviceId.removeValue(forKey: identity.deviceId)
+                provider?.linkLock.unlock()
                 Task { @MainActor in
                     DeviceManager.shared.detach(deviceId: identity.deviceId)
                 }
