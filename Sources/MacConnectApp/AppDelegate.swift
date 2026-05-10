@@ -22,6 +22,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         configureNotificationCenter()
         startNetworking()
         setupStatusItem()
+        registerServices()
+    }
+
+    private func registerServices() {
+        NSApp.servicesProvider = self
+        // Tell Launch Services to re-scan our Info.plist for NSServices, so
+        // a freshly installed/upgraded build appears in the Services menu
+        // without requiring a logout.
+        NSUpdateDynamicServices()
     }
 
     private func registerPlugins() {
@@ -76,6 +85,62 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
             NSApp.activate(ignoringOtherApps: true)
         }
+    }
+
+    // MARK: - Services menu handler
+
+    /// Invoked by macOS when the user picks "Send via MacConnect" from a
+    /// file's Services submenu. Signature is dictated by the NSServices
+    /// API; the method name (sans Swift translation) is referenced from
+    /// the NSMessage key in Info.plist as `sendFileToDevice`.
+    @objc
+    func sendFileToDevice(
+        _ pasteboard: NSPasteboard,
+        userData: String?,
+        error: AutoreleasingUnsafeMutablePointer<NSString>
+    ) {
+        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
+        guard !urls.isEmpty else {
+            error.pointee = "No files in selection" as NSString
+            return
+        }
+        Task { @MainActor in
+            await chooseDeviceAndSend(urls: urls)
+        }
+    }
+
+    @MainActor
+    private func chooseDeviceAndSend(urls: [URL]) async {
+        NSApp.activate(ignoringOtherApps: true)
+
+        let candidates = DeviceManager.shared.deviceList()
+            .filter { $0.isPaired && $0.isReachable }
+        if candidates.isEmpty {
+            let alert = NSAlert()
+            alert.messageText = "No paired devices online"
+            alert.informativeText = "Pair and connect a device in MacConnect, then try again."
+            alert.runModal()
+            return
+        }
+
+        let alert = NSAlert()
+        alert.messageText = "Send to which device?"
+        alert.informativeText = urls.count == 1
+            ? urls[0].lastPathComponent
+            : "\(urls.count) files"
+        for device in candidates {
+            alert.addButton(withTitle: device.name)
+        }
+        alert.addButton(withTitle: "Cancel")
+        let response = alert.runModal()
+        let firstDeviceCode = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
+        let idx = response.rawValue - firstDeviceCode
+        guard idx >= 0, idx < candidates.count else { return }
+        let target = candidates[idx]
+        for url in urls {
+            SharePlugin.sendFile(url, to: target)
+        }
+        Log.plugin.info("Queued \(urls.count, privacy: .public) file(s) via Services menu to \(target.id, privacy: .public)")
     }
 
     // MARK: - UNUserNotificationCenterDelegate

@@ -2,9 +2,9 @@
 
 ## Near term
 
-- mDNS / Bonjour announcement and browse using `NWListener` / `NWBrowser` with the `_kdeconnect._udp` service type. UDP broadcast stays as a fallback. Reaches peers across access points where broadcast is filtered.
 - MPRIS state parsing and a now-playing tile in the popover (PlayPause / Next / Prev / volume).
-- macOS Share Extension target so files can be sent to a paired device via Finder's right-click Share menu and from any app's share sheet.
+- macOS Share Extension proper (`.appex` bundle) so MacConnect appears in the modern Share sheet alongside Mail / Messages — not just in Finder's Services menu. Needs an app-extension build path that SwiftPM doesn't natively support; the existing Services-menu integration is the working substitute in the meantime.
+- Live-update the Bonjour service name when the user renames the device (currently set once at listener creation).
 
 ## Medium term
 
@@ -29,3 +29,5 @@
 - SHA-256 fingerprint display (local + per pinned peer) for out-of-band verification (0.1.1).
 - Per-plugin enable/disable toggles in Settings (0.1.1).
 - Notification reply via `UNTextInputNotificationAction` → `kdeconnect.notification.reply` (0.1.1).
+- mDNS announce + browse via `NWListener` / `NWBrowser` (`_kdeconnect._udp`) alongside UDP broadcast (0.1.4).
+- "Send via MacConnect" Services menu entry for right-click → Send file from Finder (0.1.4).
