@@ -1,5 +1,6 @@
 import Foundation
 import Network
+import Darwin
 
 /// Owns UDP discovery + TCP server. Discovers peers, opens links.
 ///
@@ -13,6 +14,13 @@ public final class LanLinkProvider: @unchecked Sendable {
     private var udpListener: NWListener?
     private var tcpListener: NWListener?
     private var tcpPort: UInt16 = Settings.minTCPPort
+    private var broadcastTimer: DispatchSourceTimer?
+
+    /// Interval between repeated identity broadcasts. KDE Connect Android
+    /// rebroadcasts on network change; we emit on a short timer too so phones
+    /// that join the network mid-session (or that were briefly off-Wi-Fi)
+    /// pick us up without a manual refresh.
+    public static let broadcastInterval: TimeInterval = 5
 
     private let _onIdentityCallback: AtomicBox<(IdentityPayload, LanLink) -> Void> = .init({ _, _ in })
 
@@ -26,10 +34,13 @@ public final class LanLinkProvider: @unchecked Sendable {
         try CertificateService.shared.ensureIdentity()
         try startTCPListener()
         try startUDPListener()
+        startBroadcastTimer()
         broadcastIdentity()
     }
 
     public func stop() {
+        broadcastTimer?.cancel()
+        broadcastTimer = nil
         udpListener?.cancel()
         tcpListener?.cancel()
         udpListener = nil
@@ -40,33 +51,66 @@ public final class LanLinkProvider: @unchecked Sendable {
         broadcastIdentity()
     }
 
+    private func startBroadcastTimer() {
+        broadcastTimer?.cancel()
+        let timer = DispatchSource.makeTimerSource(queue: queue)
+        timer.schedule(deadline: .now() + Self.broadcastInterval, repeating: Self.broadcastInterval)
+        timer.setEventHandler { [weak self] in
+            self?.broadcastIdentity()
+        }
+        timer.resume()
+        broadcastTimer = timer
+    }
+
     // MARK: TCP server
 
     private func startTCPListener() throws {
+        // NWListener bind failures arrive asynchronously via stateUpdateHandler,
+        // so we attempt each port and wait synchronously for it to become
+        // .ready or .failed before deciding whether to walk to the next.
         for port in Settings.minTCPPort...Settings.maxTCPPort {
+            let semaphore = DispatchSemaphore(value: 0)
+            var didFail = false
+            var listener: NWListener?
             do {
                 let params = NWParameters.tcp
                 let nwPort = NWEndpoint.Port(rawValue: port)!
-                let listener = try NWListener(using: params, on: nwPort)
-                listener.newConnectionHandler = { [weak self] conn in
+                let l = try NWListener(using: params, on: nwPort)
+                l.newConnectionHandler = { [weak self] conn in
                     self?.handleIncomingTCP(conn)
                 }
-                listener.stateUpdateHandler = { state in
-                    if case .failed(let err) = state {
-                        Log.net.error("TCP listener failed: \(err.localizedDescription, privacy: .public)")
+                l.stateUpdateHandler = { state in
+                    switch state {
+                    case .ready:
+                        semaphore.signal()
+                    case .failed(let err):
+                        Log.net.error("TCP listener bind \(port, privacy: .public) failed: \(err.localizedDescription, privacy: .public)")
+                        didFail = true
+                        semaphore.signal()
+                    case .cancelled:
+                        semaphore.signal()
+                    default: break
                     }
                 }
-                listener.start(queue: queue)
-                self.tcpListener = listener
-                self.tcpPort = port
-                Log.net.info("TCP listener on \(port, privacy: .public)")
-                return
+                l.start(queue: queue)
+                listener = l
             } catch {
                 continue
             }
+
+            // Bound wait — if neither .ready nor .failed lands fast, treat as failed.
+            let result = semaphore.wait(timeout: .now() + 1.0)
+            if result == .timedOut || didFail {
+                listener?.cancel()
+                continue
+            }
+            self.tcpListener = listener
+            self.tcpPort = port
+            Log.net.info("TCP listener on \(port, privacy: .public)")
+            return
         }
         throw NSError(domain: "MacConnect.Net", code: 1,
-                      userInfo: [NSLocalizedDescriptionKey: "No free TCP port in range"])
+                      userInfo: [NSLocalizedDescriptionKey: "No free TCP port in range \(Settings.minTCPPort)-\(Settings.maxTCPPort)"])
     }
 
     private func handleIncomingTCP(_ conn: NWConnection) {
@@ -202,24 +246,48 @@ public final class LanLinkProvider: @unchecked Sendable {
         let identity = Settings.shared.ownIdentity(tcpPort: Int(tcpPort))
         guard let data = try? identity.toPacket().serialized() else { return }
 
-        // Send to limited broadcast 255.255.255.255
-        let port = NWEndpoint.Port(rawValue: Settings.udpPort)!
-        let host = NWEndpoint.Host("255.255.255.255")
-        let params = NWParameters.udp
-        if let opt = params.defaultProtocolStack.internetProtocol as? NWProtocolIP.Options {
-            opt.version = .v4
+        // Compute subnet-directed broadcast targets per active interface.
+        // Limited broadcast (255.255.255.255) is filtered by many Wi-Fi APs;
+        // 192.168.x.255 traverses the local segment reliably.
+        let interfaces = NetworkInterfaces.ipv4Broadcasts()
+        var targets = Set(interfaces.map(\.broadcast))
+        targets.insert("255.255.255.255") // belt + suspenders
+        if interfaces.isEmpty {
+            Log.net.warning("No broadcast-capable IPv4 interfaces found")
         }
-        let conn = NWConnection(host: host, port: port, using: params)
-        conn.stateUpdateHandler = { state in
-            if case .ready = state {
-                conn.send(content: data, completion: .contentProcessed { _ in
-                    conn.cancel()
-                })
-            } else if case .failed = state {
-                conn.cancel()
+
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else {
+            Log.net.error("socket() failed errno=\(errno, privacy: .public)")
+            return
+        }
+        defer { close(fd) }
+
+        var yes: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, socklen_t(MemoryLayout<Int32>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+
+        var ok = 0
+        for addr in targets.sorted() {
+            var sin = sockaddr_in()
+            sin.sin_family = sa_family_t(AF_INET)
+            sin.sin_port = Settings.udpPort.bigEndian
+            guard inet_pton(AF_INET, addr, &sin.sin_addr) == 1 else { continue }
+
+            let sent = data.withUnsafeBytes { (buf: UnsafeRawBufferPointer) -> Int in
+                withUnsafePointer(to: &sin) { ptr -> Int in
+                    ptr.withMemoryRebound(to: sockaddr.self, capacity: 1) { sa -> Int in
+                        sendto(fd, buf.baseAddress, buf.count, 0, sa, socklen_t(MemoryLayout<sockaddr_in>.size))
+                    }
+                }
+            }
+            if sent < 0 {
+                Log.net.error("Broadcast to \(addr, privacy: .public) failed errno=\(errno, privacy: .public)")
+            } else {
+                ok += 1
             }
         }
-        conn.start(queue: queue)
+        Log.net.debug("Broadcast identity to \(ok, privacy: .public) target(s) (\(targets.count, privacy: .public) attempted)")
     }
 
     // MARK: Dispatch

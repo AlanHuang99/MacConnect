@@ -32,7 +32,7 @@ The official KDE Connect macOS app is a Qt port and feels foreign. [Soduto](http
 
 ## Build
 
-Requirements: macOS 13+, Swift 5.9+ (Command Line Tools is sufficient — full Xcode is only needed for running the test target).
+Requirements: macOS 13+, Xcode 15+ (or Command Line Tools only if you don't need to run tests — XCTest requires full Xcode).
 
 ```bash
 # Build the .app bundle
@@ -47,7 +47,10 @@ For development:
 ```bash
 swift build       # debug build, fast iteration
 swift run macconnect   # runs without bundle (no menu-bar item)
+swift test        # XCTest packet round-trip tests (needs full Xcode)
 ```
+
+To open the package in Xcode: `xed Package.swift`
 
 ## Project layout
 
@@ -63,7 +66,7 @@ Sources/
 scripts/
   build-app.sh           # produce MacConnect.app bundle
 Tests/
-  MacConnectCoreTests/   # XCTest packet round-trip tests (requires full Xcode)
+  MacConnectCoreTests/   # XCTest packet round-trip tests
 ```
 
 ## Protocol references

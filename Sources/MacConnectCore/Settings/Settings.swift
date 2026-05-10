@@ -1,7 +1,7 @@
 import Foundation
 import IOKit
 
-public final class Settings: @unchecked Sendable {
+public final class Settings: ObservableObject, @unchecked Sendable {
     public static let shared = Settings()
 
     private let defaults = UserDefaults.standard
@@ -23,7 +23,16 @@ public final class Settings: @unchecked Sendable {
 
     public var deviceName: String {
         get { defaults.string(forKey: ud_deviceName) ?? Host.current().localizedName ?? "Mac" }
-        set { defaults.set(newValue, forKey: ud_deviceName) }
+        set {
+            // KDE Connect protocol forbids these characters in deviceName
+            let forbidden = CharacterSet(charactersIn: "\"',;:.!?()[]<>")
+            let sanitized = newValue
+                .components(separatedBy: forbidden).joined()
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            let clamped = sanitized.isEmpty ? "Mac" : String(sanitized.prefix(32))
+            defaults.set(clamped, forKey: ud_deviceName)
+            DispatchQueue.main.async { self.objectWillChange.send() }
+        }
     }
 
     public func ownIdentity(tcpPort: Int?) -> IdentityPayload {

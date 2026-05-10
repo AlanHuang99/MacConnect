@@ -3,28 +3,39 @@ import MacConnectCore
 
 struct StatusView: View {
     @ObservedObject var manager = DeviceManager.shared
+    @ObservedObject var settings = MacConnectCore.Settings.shared
+    @State private var showingSettings = false
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            header
-            Divider()
-            if manager.deviceList().isEmpty {
-                empty
-            } else {
-                ScrollView {
-                    VStack(alignment: .leading, spacing: 8) {
-                        ForEach(manager.deviceList()) { device in
-                            DeviceRow(device: device)
-                            Divider()
+        ZStack {
+            VStack(alignment: .leading, spacing: 0) {
+                header
+                Divider()
+                if manager.deviceList().isEmpty {
+                    empty
+                } else {
+                    ScrollView {
+                        VStack(alignment: .leading, spacing: 8) {
+                            ForEach(manager.deviceList()) { device in
+                                DeviceRow(device: device)
+                                Divider()
+                            }
                         }
+                        .padding(.vertical, 8)
                     }
-                    .padding(.vertical, 8)
                 }
+                Divider()
+                footer
             }
-            Divider()
-            footer
+            .opacity(showingSettings ? 0 : 1)
+
+            if showingSettings {
+                SettingsView(isPresented: $showingSettings)
+                    .background(Color(NSColor.windowBackgroundColor))
+            }
         }
         .frame(width: 360, height: 500)
+        .animation(.easeInOut(duration: 0.15), value: showingSettings)
     }
 
     private var header: some View {
@@ -39,6 +50,13 @@ struct StatusView: View {
             }
             .buttonStyle(.borderless)
             .help("Re-broadcast & re-discover")
+            Button {
+                showingSettings = true
+            } label: {
+                Image(systemName: "gearshape")
+            }
+            .buttonStyle(.borderless)
+            .help("Settings")
         }
         .padding(12)
     }
@@ -62,7 +80,7 @@ struct StatusView: View {
 
     private var footer: some View {
         HStack {
-            Text("This device: \(Settings.shared.deviceName)")
+            Text("This device: \(settings.deviceName)")
                 .font(.caption)
                 .foregroundStyle(.secondary)
             Spacer()
