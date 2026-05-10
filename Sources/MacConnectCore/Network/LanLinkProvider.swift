@@ -13,12 +13,18 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "macconnect.lanprovider")
     private var udpListener: NWListener?
+    private var mdnsBrowser: NWBrowser?
     private var serverChannel: Channel?
     private var tcpPort: UInt16 = Settings.minTCPPort
     private var broadcastTimer: DispatchSourceTimer?
     private let linkLock = NSLock()
     private var channelToDeviceId: [ObjectIdentifier: String] = [:]
     private var linksByDeviceId: [String: LanLink] = [:]
+
+    /// Bonjour service type advertised + browsed for. Matches KDE Connect's
+    /// canonical mDNS service name; using anything else would break
+    /// interoperability with KDE Connect's mDNS-aware clients.
+    public static let bonjourServiceType = "_kdeconnect._udp"
 
     /// Interval between repeated identity broadcasts.
     public static let broadcastInterval: TimeInterval = 5
@@ -47,6 +53,7 @@ public final class LanLinkProvider: @unchecked Sendable {
         Log.net.info("TCP listener on \(port, privacy: .public)")
 
         try startUDPListener()
+        startMDNSBrowser()
         startBroadcastTimer()
         broadcastIdentity()
     }
@@ -56,6 +63,8 @@ public final class LanLinkProvider: @unchecked Sendable {
         broadcastTimer = nil
         udpListener?.cancel()
         udpListener = nil
+        mdnsBrowser?.cancel()
+        mdnsBrowser = nil
         try? serverChannel?.close().wait()
         serverChannel = nil
     }
@@ -260,6 +269,14 @@ public final class LanLinkProvider: @unchecked Sendable {
         let port = NWEndpoint.Port(rawValue: Settings.udpPort)!
         let listener = try NWListener(using: params, on: port)
 
+        // Advertise via Bonjour alongside UDP broadcast. mDNS-aware peers
+        // (KDE Connect Linux, recent Android) find us without needing
+        // broadcast packets to make it past mesh APs / AP isolation.
+        listener.service = NWListener.Service(
+            name: Settings.shared.deviceName,
+            type: Self.bonjourServiceType
+        )
+
         listener.newConnectionHandler = { [weak self] incoming in
             incoming.start(queue: self?.queue ?? .main)
             incoming.receiveMessage { data, _, _, _ in
@@ -275,7 +292,65 @@ public final class LanLinkProvider: @unchecked Sendable {
         }
         listener.start(queue: queue)
         self.udpListener = listener
-        Log.net.info("UDP listener on \(Settings.udpPort, privacy: .public)")
+        Log.net.info("UDP listener on \(Settings.udpPort, privacy: .public) (also advertising \(Self.bonjourServiceType, privacy: .public))")
+    }
+
+    // MARK: - mDNS browse
+
+    private func startMDNSBrowser() {
+        let descriptor = NWBrowser.Descriptor.bonjour(type: Self.bonjourServiceType, domain: nil)
+        let browser = NWBrowser(for: descriptor, using: NWParameters())
+        browser.browseResultsChangedHandler = { [weak self] _, changes in
+            for change in changes {
+                switch change {
+                case .added(let result):
+                    self?.handleMDNSResult(result)
+                case .changed(_, let result, _):
+                    self?.handleMDNSResult(result)
+                case .removed, .identical:
+                    break
+                @unknown default:
+                    break
+                }
+            }
+        }
+        browser.stateUpdateHandler = { state in
+            if case .failed(let err) = state {
+                Log.net.error("mDNS browser failed: \(err.localizedDescription, privacy: .public)")
+            }
+        }
+        browser.start(queue: queue)
+        self.mdnsBrowser = browser
+        Log.net.info("mDNS browser searching \(Self.bonjourServiceType, privacy: .public)")
+    }
+
+    /// Send our identity directly to a peer discovered via mDNS. The peer's
+    /// UDP listener will see our identity payload and TCP-connect back
+    /// through the existing flow — no separate code path needed past this
+    /// point. Self-discovery is harmless: handleUDPIdentity filters by
+    /// deviceId.
+    private func handleMDNSResult(_ result: NWBrowser.Result) {
+        guard serverChannel != nil else { return }
+        let identity = Settings.shared.ownIdentity(tcpPort: Int(tcpPort))
+        guard let data = try? identity.toPacket().serialized() else { return }
+
+        let connection = NWConnection(to: result.endpoint, using: .udp)
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.send(content: data, completion: .contentProcessed { _ in
+                    connection.cancel()
+                })
+            case .failed(let err):
+                Log.net.debug("mDNS-target send failed: \(err.localizedDescription, privacy: .public)")
+                connection.cancel()
+            case .cancelled:
+                break
+            default:
+                break
+            }
+        }
+        connection.start(queue: queue)
     }
 
     private func handleUDPIdentity(_ data: Data, from endpoint: NWEndpoint) {
