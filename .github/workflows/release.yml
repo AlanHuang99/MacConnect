@@ -69,12 +69,19 @@ jobs:
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
       - name: Codesign with Developer ID + Hardened Runtime
-        env:
-          TEAM_ID: ${{ secrets.MACOS_TEAM_ID }}
         run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" | head -1 | awk '{print $2}')
+          if [ -z "$IDENTITY" ]; then
+            echo "No Developer ID Application identity in $KEYCHAIN_PATH"
+            security find-identity -v -p codesigning "$KEYCHAIN_PATH"
+            exit 1
+          fi
           codesign --force --options runtime --timestamp \
             --entitlements resources/MacConnect.entitlements \
-            --sign "$TEAM_ID" \
+            --keychain "$KEYCHAIN_PATH" \
+            --sign "$IDENTITY" \
             build/MacConnect.app
           codesign --verify --strict --verbose=2 build/MacConnect.app
           codesign --display --verbose=4 build/MacConnect.app
