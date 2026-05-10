@@ -10,13 +10,8 @@ enum Notifier {
         do {
             try await UNUserNotificationCenter.current().add(req)
         } catch {
-            // Banner permission may not be granted; log and continue
+            // User has not granted notification permission, or system suppressed it.
             Log.plugin.notice("Notification post failed: \(error.localizedDescription, privacy: .public)")
         }
-    }
-
-    static func showAction(title: String, body: String, actions: [String]) async {
-        // Action support is not yet wired up; for now this just shows a banner.
-        await show(title: title, body: body)
     }
 }

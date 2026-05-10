@@ -149,15 +149,33 @@ struct DeviceRow: View {
     }
 
     private var pairedActions: some View {
-        HStack(spacing: 6) {
-            Button("Ping") { PingPlugin.send(to: device) }
-            Button("Push Clipboard") { ClipboardPlugin.pushClipboard(to: device) }
-            Button("Find") { FindMyPhonePlugin.ring(device) }
-            Spacer()
-            Button("Unpair") { DeviceManager.shared.unpair(device) }
-                .foregroundStyle(.red)
+        VStack(alignment: .leading, spacing: 4) {
+            HStack(spacing: 6) {
+                Button("Ping") { PingPlugin.send(to: device) }
+                Button("Clipboard") { ClipboardPlugin.pushClipboard(to: device) }
+                Button("Find") { FindMyPhonePlugin.ring(device) }
+                Button("Send File…") { presentFilePicker() }
+                Spacer()
+                Button("Unpair") { DeviceManager.shared.unpair(device) }
+                    .foregroundStyle(.red)
+            }
         }
         .controlSize(.small)
+    }
+
+    private func presentFilePicker() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = true
+        panel.canChooseDirectories = false
+        panel.allowsMultipleSelection = false
+        panel.title = "Send file to \(device.name)"
+        panel.prompt = "Send"
+        panel.begin { result in
+            guard result == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                SharePlugin.sendFile(url, to: device)
+            }
+        }
     }
 
     private var unpairedActions: some View {

@@ -9,12 +9,14 @@ public final class NIOTransport: @unchecked Sendable {
     public let group: EventLoopGroup
     public let sslContext: NIOSSLContext
 
-    public init() {
+    private init() {
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
         do {
             self.sslContext = try TLSContextBuilder.makeContext()
         } catch {
-            // Fatal at init — without TLS we cannot do anything KDE Connect.
+            // Without a working TLS context the LAN protocol cannot run, so
+            // crashing at startup is more useful than continuing in a broken
+            // state.
             fatalError("TLS context init failed: \(error.localizedDescription)")
         }
     }

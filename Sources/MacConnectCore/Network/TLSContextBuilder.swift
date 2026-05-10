@@ -11,10 +11,10 @@ import NIOSSL
 public enum TLSContextBuilder {
     public static func makeContext() throws -> NIOSSLContext {
         try CertificateService.shared.ensureIdentity()
-        let cert = try NIOSSLCertificate(file: CertificateService.shared.certificatePEMURL.path, format: .pem)
+        let certs = try NIOSSLCertificate.fromPEMFile(CertificateService.shared.certificatePEMURL.path)
         let key = try NIOSSLPrivateKey(file: CertificateService.shared.privateKeyPEMURL.path, format: .pem)
         var config = TLSConfiguration.makeServerConfiguration(
-            certificateChain: [.certificate(cert)],
+            certificateChain: certs.map { .certificate($0) },
             privateKey: .privateKey(key)
         )
         // Custom verification handles peer cert (TOFU + pinning); do not let
@@ -23,6 +23,21 @@ public enum TLSContextBuilder {
         // KDE Connect supports TLS 1.2+. Some Linux peers still negotiate 1.2.
         config.minimumTLSVersion = .tlsv12
         return try NIOSSLContext(configuration: config)
+    }
+
+    /// Custom verification callback bound to a known peer deviceId. Used for
+    /// payload sub-connections where we already know who the peer must be.
+    public static func verifier(forKnownDeviceId deviceId: String) -> NIOSSLCustomVerificationCallback {
+        return { peerCerts, promise in
+            let result = PeerVerifier.verify(deviceId: deviceId, peerCerts: peerCerts)
+            switch result {
+            case .accepted, .pinnedMatch:
+                promise.succeed(.certificateVerified)
+            case .pinnedMismatch, .missing:
+                Log.pair.error("Payload TLS verify failed for \(deviceId, privacy: .public): \(String(describing: result), privacy: .public)")
+                promise.succeed(.failed)
+            }
+        }
     }
 }
 
@@ -39,19 +54,24 @@ public enum PeerVerifier {
     /// Stores the cert as the "pending" pin if not yet paired (TOFU).
     public static func verify(deviceId: String, peerCerts: [NIOSSLCertificate]) -> PeerVerification {
         guard let leaf = peerCerts.first else { return .missing }
-        let der = Data(try! leaf.toDERBytes())
+        let der: Data
+        do {
+            der = Data(try leaf.toDERBytes())
+        } catch {
+            Log.pair.error("toDERBytes failed for \(deviceId, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            return .missing
+        }
         let isTrusted = Settings.shared.isTrusted(deviceId)
         if isTrusted {
             guard let pinned = CertificateService.shared.loadRemoteCertDER(deviceId: deviceId) else {
-                // Trusted but no pin on disk — should not happen, but be defensive
+                // Trusted but no pin on disk; rebuild the pin from this cert.
                 CertificateService.shared.storeRemoteCertDER(deviceId: deviceId, der: der)
                 return .pinnedMatch
             }
             return pinned == der ? .pinnedMatch : .pinnedMismatch
-        } else {
-            // Not yet paired: store as pending pin so pair-accept can promote it
-            CertificateService.shared.storeRemoteCertDER(deviceId: deviceId, der: der)
-            return .accepted
         }
+        // Not yet paired: TOFU — store as pending pin so pair-accept can promote it.
+        CertificateService.shared.storeRemoteCertDER(deviceId: deviceId, der: der)
+        return .accepted
     }
 }

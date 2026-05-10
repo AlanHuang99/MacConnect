@@ -23,13 +23,7 @@ public final class LanLinkProvider: @unchecked Sendable {
     /// Interval between repeated identity broadcasts.
     public static let broadcastInterval: TimeInterval = 5
 
-    private let _onIdentityCallback: AtomicBox<(IdentityPayload, LanLink) -> Void> = .init({ _, _ in })
-
     public init() {}
-
-    public func onIdentity(_ cb: @escaping (IdentityPayload, LanLink) -> Void) {
-        _onIdentityCallback.set(cb)
-    }
 
     public func start() throws {
         try CertificateService.shared.ensureIdentity()
@@ -70,6 +64,29 @@ public final class LanLinkProvider: @unchecked Sendable {
         broadcastIdentity()
     }
 
+    /// Look up the peer's IP for an active link, used for opening payload
+    /// connections back to the same peer.
+    public func peerHost(for deviceId: String) -> String? {
+        linkLock.lock()
+        let link = linksByDeviceId[deviceId]
+        linkLock.unlock()
+        guard let remote = link?.activeChannel.remoteAddress else { return nil }
+        switch remote {
+        case .v4(let v4):
+            var addr = v4.address.sin_addr
+            var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
+            inet_ntop(AF_INET, &addr, &buf, socklen_t(buf.count))
+            return String(cString: buf)
+        case .v6(let v6):
+            var addr = v6.address.sin6_addr
+            var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
+            inet_ntop(AF_INET6, &addr, &buf, socklen_t(buf.count))
+            return String(cString: buf)
+        case .unixDomainSocket:
+            return nil
+        }
+    }
+
     private func startBroadcastTimer() {
         broadcastTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -87,9 +104,10 @@ public final class LanLinkProvider: @unchecked Sendable {
         Log.net.info("Identity from \(identity.deviceName, privacy: .public) (\(identity.deviceId, privacy: .public))")
         linkLock.lock()
         if let existing = linksByDeviceId[identity.deviceId] {
-            // Already have a link for this device; replace the underlying
-            // channel so we always send on the newest connection (matches
-            // KDE Connect's per-deviceId socket-replacement semantics).
+            // Already have a link for this device. Replace the underlying
+            // channel with the newer one so sends always go on the most
+            // recent connection. Both peers do this independently and end
+            // up agreeing on the same active channel.
             let oldChannel = existing.activeChannel
             existing.replaceChannel(with: channel)
             channelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
@@ -99,7 +117,6 @@ public final class LanLinkProvider: @unchecked Sendable {
             Task { @MainActor in
                 _ = DeviceManager.shared.upsert(identity: identity)
             }
-            _onIdentityCallback.value(identity, existing)
             return
         }
         let link = LanLink(
@@ -125,7 +142,6 @@ public final class LanLinkProvider: @unchecked Sendable {
         Task { @MainActor in
             _ = DeviceManager.shared.upsert(identity: identity)
         }
-        _onIdentityCallback.value(identity, link)
     }
 
     private func handlePacket(_ packet: NetworkPacket, channel: Channel) {
@@ -178,12 +194,13 @@ public final class LanLinkProvider: @unchecked Sendable {
     @MainActor
     private func dispatch(_ packet: NetworkPacket, identity: IdentityPayload) {
         let device = DeviceManager.shared.upsert(identity: identity)
+        Log.plugin.info("Recv \(packet.type, privacy: .public) from \(identity.deviceName, privacy: .public)")
         if packet.type == PacketType.pair {
             handlePairPacket(packet, device: device)
             return
         }
         guard Settings.shared.isTrusted(device.id) else {
-            Log.pair.notice("Dropping \(packet.type, privacy: .public) from untrusted \(device.id, privacy: .public)")
+            Log.plugin.notice("Drop (untrusted) \(packet.type, privacy: .public) from \(device.id, privacy: .public)")
             return
         }
         Task { @MainActor in
@@ -317,19 +334,5 @@ public final class LanLinkProvider: @unchecked Sendable {
             }
         }
         Log.net.debug("Broadcast identity to \(ok, privacy: .public) target(s)")
-    }
-}
-
-final class AtomicBox<T>: @unchecked Sendable {
-    private let lock = NSLock()
-    private var _value: T
-    init(_ value: T) { self._value = value }
-    var value: T {
-        lock.lock(); defer { lock.unlock() }
-        return _value
-    }
-    func set(_ newValue: T) {
-        lock.lock(); defer { lock.unlock() }
-        _value = newValue
     }
 }

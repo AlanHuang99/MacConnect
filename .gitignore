@@ -1,7 +1,29 @@
+# Swift Package Manager
 .build/
 .swiftpm/
-DerivedData/
-*.xcodeproj/
 Package.resolved
-.DS_Store
+
+# Xcode
+*.xcodeproj/
+*.xcworkspace/
+DerivedData/
+xcuserdata/
+
+# Build output
+build/
+*.app/
+
+# Local research / scratch
 research/
+
+# macOS
+.DS_Store
+
+# Editor / IDE
+.vscode/
+.idea/
+
+# Generated TLS material — never commit these
+*.pem
+*.p12
+*.der

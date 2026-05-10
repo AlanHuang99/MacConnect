@@ -1,41 +1,43 @@
 # MacConnect
 
-A Mac-native, no-Qt, no-Catalyst KDE Connect client. Built fresh in pure Swift with Apple's Network framework, AppKit, and SwiftUI.
+A KDE Connect client for macOS, written in Swift, AppKit, and SwiftUI. It speaks the KDE Connect LAN protocol and interoperates with KDE Connect on Android, Linux, and Windows.
 
-> **Status: v0.1 — early skeleton.** Device discovery and identity exchange work. TLS upgrade and pairing are the next milestone (see [TODO.md](TODO.md)).
+## Status
 
-## Why?
+Working features:
 
-The official KDE Connect macOS app is a Qt port and feels foreign. [Soduto](https://github.com/sannidhyaroy/Soduto) is a fork-of-a-fork of an old codebase, and its auto-clipboard sync sends every paired device a notification any time you copy text. This project is a clean, Mac-native rewrite that:
+- UDP discovery on port 1716, with subnet-directed broadcasts on every active IPv4 interface.
+- Plain-TCP identity exchange followed by mutual TLS (TOFU on first pair, per-device certificate pinning afterwards).
+- Pair / unpair flow with explicit Accept/Reject prompts in both directions.
+- Plugins:
+  - Ping (send + receive, banner notification on receive).
+  - Clipboard (manual push on outbound; auto-apply on inbound).
+  - Notifications (receive Android notifications as macOS banners).
+  - Find My Phone (ring outbound).
+  - Share (URL, text, and file payload — send and receive over a second TLS connection).
+- Menu-bar UI with a popover that lists discovered devices, their pair status, and per-device actions.
+- Settings panel: editable broadcast name, pinned-device list with Forget action.
 
-- **Does not auto-sync clipboard.** Push and pull are explicit menu actions.
-- **Uses Apple's Network framework** instead of CocoaAsyncSocket — no Objective-C dependency.
-- **Targets macOS 13+ with SwiftUI / AppKit** for a real menu-bar experience.
+Not implemented yet:
 
-## What works today
+- mDNS / Bonjour announcement (only legacy UDP broadcast is used).
+- MPRIS state parsing (packets are received but no media UI).
+- Notification reply.
+- Code signing / notarization for distribution.
+- Login Item registration.
 
-- ✅ UDP discovery on port 1716 (broadcast send + listen)
-- ✅ TCP server + outbound TCP, plain-TCP identity exchange
-- ✅ Self-signed RSA-2048 TLS identity generated on first run (via `/usr/bin/openssl`)
-- ✅ Device list in a menu-bar popover with reachability + pair status
-- ✅ Plugin abstraction (Ping / Clipboard / Notifications / FindMyPhone / MPRIS / Share)
-- ✅ Pair-request UI prompt (Accept / Reject)
-- ✅ Builds cleanly under Swift 6 strict concurrency
+See [`ROADMAP.md`](ROADMAP.md) for upcoming work.
 
-## What does *not* work yet
+## Requirements
 
-- ❌ **TLS upgrade.** Plain TCP is exchanged but `startTLS` is not yet wired. KDE Connect requires post-identity TLS upgrade with mutual cert auth and per-device pinning. Apple's `NWConnection` does not support starting plain TCP and upgrading mid-stream — the next iteration switches the transport layer to `swift-nio` + `swift-nio-ssl`. See [TODO.md](TODO.md).
-- ❌ Pairing handshake completion — depends on TLS.
-- ❌ File transfer (depends on TLS payload-channel).
-- ❌ MPRIS state parsing (packets received, not yet decoded).
-- ❌ mDNS/Bonjour announcement (only legacy 255.255.255.255 broadcast for now).
+- macOS 13 or later.
+- Xcode 15+ (or Command Line Tools, in which case `swift test` is unavailable because XCTest ships with Xcode).
+- `/usr/bin/openssl` (present on stock macOS) — used once on first launch to generate the local TLS identity.
 
-## Build
-
-Requirements: macOS 13+, Xcode 15+ (or Command Line Tools only if you don't need to run tests — XCTest requires full Xcode).
+## Build and run
 
 ```bash
-# Build the .app bundle
+# Assemble a .app bundle
 ./scripts/build-app.sh release
 
 # Launch
@@ -45,38 +47,54 @@ open build/MacConnect.app
 For development:
 
 ```bash
-swift build       # debug build, fast iteration
-swift run macconnect   # runs without bundle (no menu-bar item)
-swift test        # XCTest packet round-trip tests (needs full Xcode)
+swift build              # debug build
+swift run macconnect     # runs without bundle (no menu-bar item)
+swift test               # unit tests
+xed Package.swift        # open in Xcode
 ```
 
-To open the package in Xcode: `xed Package.swift`
+The first launch generates an RSA-2048 self-signed certificate under `~/Library/Application Support/MacConnect/` and seeds a stable device ID. Trusted-peer certificates are stored alongside as DER files keyed by remote `deviceId`.
 
 ## Project layout
 
 ```
 Sources/
-  MacConnectCore/        # library — protocol, network, plugins
-    Packet/              # NetworkPacket, IdentityPayload, PairPacketBuilder
-    Network/             # LanLinkProvider (UDP+TCP), LanLink, CertificateService
-    Device/              # Device, DeviceManager
-    Plugin/              # Plugin protocol, registry, plugin implementations
-    Settings/            # device id, name, trusted-device store
-  MacConnectApp/         # menu-bar executable (AppKit + SwiftUI popover)
-scripts/
-  build-app.sh           # produce MacConnect.app bundle
-Tests/
-  MacConnectCoreTests/   # XCTest packet round-trip tests
+  MacConnectCore/
+    Logging.swift              # os.Logger subsystems
+    Settings/                  # device id, name, trusted-device store
+    Packet/                    # NetworkPacket, IdentityPayload, PairPacketBuilder, PacketType
+    Network/
+      LanLinkProvider.swift    # UDP discovery + TCP listener + outbound dial
+      LanLink.swift            # per-device link wrapping a NIO Channel
+      KDEConnectChannelHandler.swift
+                               # plain-TCP identity then mTLS upgrade
+      NIOTransport.swift       # event-loop group + bootstraps
+      PayloadTransport.swift   # second-channel file transfer
+      TLSContextBuilder.swift  # NIOSSL config + per-deviceId pinning verifier
+      CertificateService.swift # local cert + pinned-peer store
+      NetworkInterfaces.swift  # getifaddrs broadcast enumeration
+    Device/                    # Device, DeviceManager
+    Plugin/                    # Plugin protocol, registry, plugin implementations
+  MacConnectApp/               # menu-bar executable (AppKit + SwiftUI popover)
+Tests/MacConnectCoreTests/     # XCTest packet round-trip tests
+scripts/build-app.sh           # assembles MacConnect.app from the executable
+.github/workflows/             # CI
 ```
 
-## Protocol references
+## Protocol
 
-This project implements the KDE Connect LAN protocol. The reference implementations consulted while writing this:
+Implemented against KDE Connect protocol version 7. References used:
 
-- [KDE Connect iOS](https://invent.kde.org/network/kdeconnect-ios) (Objective-C network backend, Swift UI) — used as the protocol reference, not as a base for porting. License GPLv3.
-- [Valent protocol reference](https://valent.andyholmes.ca/documentation/protocol.html) — packet specification.
+- [KDE Connect iOS](https://invent.kde.org/network/kdeconnect-ios) — protocol reference.
 - [KDE Connect Android](https://invent.kde.org/network/kdeconnect-android) — canonical implementation.
+- [Valent protocol reference](https://valent.andyholmes.ca/documentation/protocol.html) — packet specification.
+
+Notes specific to this implementation:
+
+- Discovery uses subnet-directed UDP broadcasts (e.g. `192.168.1.255`) on every active IPv4 interface in addition to limited broadcast (`255.255.255.255`). Limited broadcast alone is filtered by many Wi-Fi access points and bridges.
+- Per the protocol, the TCP-connect initiator becomes the TLS server and the TCP-accept side becomes the TLS client. The same channel is used for plain identity then upgraded to TLS via dynamic `ChannelPipeline` reconfiguration in `KDEConnectChannelHandler`.
+- File transfer opens a second TLS connection on a port advertised in `payloadTransferInfo.port`. The receiver writes the payload to `~/Downloads/`, with `(1)`, `(2)` suffixes on filename collisions.
 
 ## License
 
-GPLv3 — matching the upstream KDE Connect projects. See [LICENSE](LICENSE).
+GPL-3.0-or-later. The KDE Connect upstream is licensed GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL; this project chooses GPL-3.0-or-later for compatibility with the iOS port. See [`LICENSE`](LICENSE).

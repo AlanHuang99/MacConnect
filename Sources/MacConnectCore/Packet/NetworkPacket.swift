@@ -62,7 +62,6 @@ public struct NetworkPacket: Sendable {
 
 public enum PacketError: Error {
     case malformed
-    case oversized
 }
 
 public enum AnyJSON: Sendable {

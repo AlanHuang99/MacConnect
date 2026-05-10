@@ -1,14 +1,19 @@
 import Foundation
-import Security
+import CryptoKit
 
+/// Manages the local TLS identity (RSA-2048 self-signed certificate + private
+/// key) and the on-disk store of pinned remote-peer certs.
+///
+/// The local cert and key are written as PEM under
+/// `~/Library/Application Support/MacConnect/`. They are produced via the
+/// system `openssl` binary on first run and reused afterwards.
 public final class CertificateService: @unchecked Sendable {
     public static let shared = CertificateService()
 
-    private let queue = DispatchQueue(label: "macconnect.cert")
+    private let lock = NSLock()
     private let appSupportDir: URL
     private let keyURL: URL
     private let certURL: URL
-    private let p12URL: URL
     private let trustedDir: URL
 
     public init() {
@@ -22,14 +27,17 @@ public final class CertificateService: @unchecked Sendable {
         self.appSupportDir = dir
         self.keyURL = dir.appendingPathComponent("key.pem")
         self.certURL = dir.appendingPathComponent("cert.pem")
-        self.p12URL = dir.appendingPathComponent("identity.p12")
         self.trustedDir = trusted
     }
 
+    public var certificatePEMURL: URL { certURL }
+    public var privateKeyPEMURL: URL { keyURL }
+
     public func ensureIdentity() throws {
+        lock.lock()
+        defer { lock.unlock() }
         if FileManager.default.fileExists(atPath: certURL.path),
-           FileManager.default.fileExists(atPath: keyURL.path),
-           FileManager.default.fileExists(atPath: p12URL.path) {
+           FileManager.default.fileExists(atPath: keyURL.path) {
             return
         }
         try generateIdentity()
@@ -49,50 +57,16 @@ public final class CertificateService: @unchecked Sendable {
             "-subj", subject,
         ])
 
-        try runProcess("/usr/bin/openssl", [
-            "pkcs12", "-export",
-            "-inkey", keyURL.path,
-            "-in", certURL.path,
-            "-out", p12URL.path,
-            "-passout", "pass:macconnect",
-            "-name", "MacConnect",
-        ])
-
         Log.pair.info("Generated TLS identity for deviceId=\(deviceId, privacy: .public)")
-    }
-
-    public func loadIdentity() throws -> SecIdentity {
-        try ensureIdentity()
-        let data = try Data(contentsOf: p12URL)
-        let options: [String: Any] = [kSecImportExportPassphrase as String: "macconnect"]
-        var items: CFArray?
-        let status = SecPKCS12Import(data as CFData, options as CFDictionary, &items)
-        guard status == errSecSuccess, let arr = items as? [[String: Any]],
-              let first = arr.first,
-              let identity = first[kSecImportItemIdentity as String] else {
-            throw NSError(domain: "MacConnect.Cert", code: Int(status), userInfo: [NSLocalizedDescriptionKey: "PKCS12 import failed (\(status))"])
-        }
-        return identity as! SecIdentity
-    }
-
-    public var certificatePEMURL: URL { certURL }
-    public var privateKeyPEMURL: URL { keyURL }
-
-    public func storeRemoteCert(deviceId: String, cert: SecCertificate) {
-        let data = SecCertificateCopyData(cert) as Data
-        let url = trustedDir.appendingPathComponent("\(deviceId).der")
-        try? data.write(to: url)
     }
 
     public func storeRemoteCertDER(deviceId: String, der: Data) {
         let url = trustedDir.appendingPathComponent("\(deviceId).der")
-        try? der.write(to: url)
-    }
-
-    public func loadRemoteCert(deviceId: String) -> SecCertificate? {
-        let url = trustedDir.appendingPathComponent("\(deviceId).der")
-        guard let data = try? Data(contentsOf: url) else { return nil }
-        return SecCertificateCreateWithData(nil, data as CFData)
+        do {
+            try der.write(to: url)
+        } catch {
+            Log.pair.error("Failed to store cert for \(deviceId, privacy: .public): \(error.localizedDescription, privacy: .public)")
+        }
     }
 
     public func loadRemoteCertDER(deviceId: String) -> Data? {
@@ -105,13 +79,8 @@ public final class CertificateService: @unchecked Sendable {
         try? FileManager.default.removeItem(at: url)
     }
 
-    public func sha256Fingerprint(of cert: SecCertificate) -> String {
-        let data = SecCertificateCopyData(cert) as Data
-        return data.sha256Hex
-    }
-
     public func sha256Fingerprint(ofDER der: Data) -> String {
-        return der.sha256Hex
+        SHA256.hash(data: der).map { String(format: "%02x", $0) }.joined()
     }
 
     @discardableResult
@@ -125,21 +94,16 @@ public final class CertificateService: @unchecked Sendable {
         p.standardError = err
         try p.run()
         p.waitUntilExit()
-        let outData = try out.fileHandleForReading.readToEnd() ?? Data()
-        let errData = try err.fileHandleForReading.readToEnd() ?? Data()
+        let outData = (try? out.fileHandleForReading.readToEnd()) ?? Data()
+        let errData = (try? err.fileHandleForReading.readToEnd()) ?? Data()
         if p.terminationStatus != 0 {
             let msg = String(data: errData, encoding: .utf8) ?? ""
-            throw NSError(domain: "MacConnect.Process", code: Int(p.terminationStatus),
-                          userInfo: [NSLocalizedDescriptionKey: "\(exec) failed: \(msg)"])
+            throw NSError(
+                domain: "MacConnect.Process",
+                code: Int(p.terminationStatus),
+                userInfo: [NSLocalizedDescriptionKey: "\(exec) failed: \(msg)"]
+            )
         }
         return String(data: outData, encoding: .utf8) ?? ""
-    }
-}
-
-import CryptoKit
-
-extension Data {
-    var sha256Hex: String {
-        SHA256.hash(data: self).map { String(format: "%02x", $0) }.joined()
     }
 }

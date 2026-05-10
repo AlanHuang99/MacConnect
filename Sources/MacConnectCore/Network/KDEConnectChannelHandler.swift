@@ -83,10 +83,10 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
         case .awaitingPlainIdentity:
             tryParsePlainIdentity(context: context)
         case .awaitingTLSHandshake:
-            // Bytes here would be unencrypted bytes leaking through before
-            // SSL handler is in place — should not happen given our install
-            // ordering. Drop with a log.
-            Log.net.warning("Bytes during TLS handshake state — unexpected")
+            // Plaintext bytes should not arrive here: the SSL handler sits
+            // before us in the pipeline and is the one that decodes incoming
+            // bytes during the handshake.
+            Log.net.warning("Bytes during TLS handshake state are unexpected")
         case .ready:
             drainReadyPackets()
         }
@@ -135,15 +135,14 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
 
         switch role {
         case .inbound:
-            // We got peer identity. We are TLS client. Install handler with
-            // any leftover buffered bytes (likely the start of ClientHello —
-            // wait no, we are CLIENT so WE send ClientHello; the leftover
-            // would be unusual).
+            // Peer identity received; we now act as TLS client. Hand any
+            // bytes already buffered past the identity LF back into the
+            // pipeline so the SSL handler can decode them.
             let leftover = drainBufferAsByteBuffer()
             installSSLHandlerAndReplay(context: context, isServer: false, leftover: leftover)
         case .outbound:
-            // For outbound the SSL handler was already installed in
-            // channelActive, so we should never reach plain-identity parsing.
+            // Outbound installs the SSL handler in channelActive; this state
+            // is unreachable for that role.
             assertionFailure("Outbound role parsed plain identity post-TLS install")
         }
     }
@@ -198,7 +197,7 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
             // Replay leftover bytes through the head of the pipeline so SSL
             // can decrypt them.
             if let leftover, leftover.readableBytes > 0 {
-                context.channel.pipeline.fireChannelRead(NIOAny(leftover))
+                context.channel.pipeline.fireChannelRead(leftover)
             }
         } catch {
             Log.net.error("Failed to install TLS handler: \(error.localizedDescription, privacy: .public)")
@@ -228,7 +227,7 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
 
     private func sendOwnIdentityPlain(context: ChannelHandlerContext) {
         // Include the targetDeviceId/targetProtocolVersion fields per protocol
-        var identity = Settings.shared.ownIdentity(tcpPort: nil)
+        let identity = Settings.shared.ownIdentity(tcpPort: nil)
         var packet = identity.toPacket()
         if case .outbound(let peer) = role {
             packet.body["targetDeviceId"] = .string(peer.deviceId)

@@ -3,11 +3,9 @@ import NIOCore
 
 public final class LanLink: @unchecked Sendable {
     public let deviceId: String
-    public var isSecure: Bool = false
 
-    /// The currently-active channel. Replaced (and the prior channel closed)
-    /// when a newer secured connection arrives for the same `deviceId`,
-    /// matching KDE Connect's behavior of preferring the most recent socket.
+    private let lock = NSLock()
+    private var _isSecure: Bool = false
     private var channel: Channel
     private let onPacketCallback: @Sendable (NetworkPacket) -> Void
     private let onCloseCallback: @Sendable () -> Void
@@ -24,11 +22,29 @@ public final class LanLink: @unchecked Sendable {
         self.onCloseCallback = onClose
     }
 
-    public var activeChannel: Channel { channel }
+    public var isSecure: Bool {
+        get {
+            lock.lock(); defer { lock.unlock() }
+            return _isSecure
+        }
+        set {
+            lock.lock(); defer { lock.unlock() }
+            _isSecure = newValue
+        }
+    }
 
+    public var activeChannel: Channel {
+        lock.lock(); defer { lock.unlock() }
+        return channel
+    }
+
+    /// Replace the active channel with a newer secured connection. The old
+    /// channel is closed; the new one becomes the send target.
     public func replaceChannel(with newChannel: Channel) {
+        lock.lock()
         let old = channel
         channel = newChannel
+        lock.unlock()
         if old !== newChannel {
             old.close(promise: nil)
         }
@@ -43,17 +59,23 @@ public final class LanLink: @unchecked Sendable {
     }
 
     public func disconnect() {
-        channel.close(promise: nil)
+        activeChannel.close(promise: nil)
     }
 
     public func send(_ packet: NetworkPacket) {
-        guard isSecure else {
+        let secure: Bool
+        let ch: Channel
+        lock.lock()
+        secure = _isSecure
+        ch = channel
+        lock.unlock()
+
+        guard secure else {
             Log.net.warning("Refusing to send \(packet.type, privacy: .public) before TLS for \(self.deviceId, privacy: .public)")
             return
         }
         do {
             let data = try packet.serialized()
-            let ch = channel
             var buf = ch.allocator.buffer(capacity: data.count)
             buf.writeBytes(data)
             let promise = ch.eventLoop.makePromise(of: Void.self)

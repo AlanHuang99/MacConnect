@@ -35,7 +35,13 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func requestNotificationAuthorization() {
-        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { _, _ in }
+        UNUserNotificationCenter.current().requestAuthorization(options: [.alert, .sound]) { granted, error in
+            if let error {
+                Log.app.notice("Notification authorization request failed: \(error.localizedDescription, privacy: .public)")
+            } else if !granted {
+                Log.app.notice("Notification authorization not granted")
+            }
+        }
     }
 
     private func startNetworking() {

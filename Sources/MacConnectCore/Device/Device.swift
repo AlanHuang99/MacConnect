@@ -14,12 +14,6 @@ public final class Device: ObservableObject, Identifiable {
     @Published public var outgoingPairRequest: Bool = false
     @Published public var lastSeen: Date = Date()
 
-    /// Convenience for old call sites — true if either side has a request pending.
-    public var pairRequestPending: Bool {
-        get { incomingPairRequest || outgoingPairRequest }
-        set { incomingPairRequest = newValue }
-    }
-
     public var protocolVersion: Int
     public var incomingCapabilities: [String]
     public var outgoingCapabilities: [String]
