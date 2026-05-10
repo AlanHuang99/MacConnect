@@ -17,6 +17,21 @@ public final class NotificationPlugin: Plugin, @unchecked Sendable {
         let isCancel = packet.body["isCancel"]?.boolValue ?? false
         if isCancel { return }
         let composed = [title, text].compactMap { $0 }.joined(separator: "\n")
-        await Notifier.show(title: appName, body: composed.isEmpty ? "Notification" : composed)
+        let body = composed.isEmpty ? "Notification" : composed
+
+        let replyCtx: Notifier.ReplyContext? = packet.body["requestReplyId"]?.stringValue.map {
+            Notifier.ReplyContext(deviceId: device.id, requestReplyId: $0)
+        }
+
+        await Notifier.show(title: appName, body: body, replyContext: replyCtx)
+    }
+
+    /// Build a `kdeconnect.notification.reply` packet routing the user's
+    /// typed reply back to the peer that sent the original notification.
+    public static func replyPacket(requestReplyId: String, message: String) -> NetworkPacket {
+        NetworkPacket(type: PacketType.notificationReply, body: [
+            "requestReplyId": .string(requestReplyId),
+            "message": .string(message),
+        ])
     }
 }

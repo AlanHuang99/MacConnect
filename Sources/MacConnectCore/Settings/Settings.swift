@@ -8,6 +8,7 @@ public final class Settings: ObservableObject, @unchecked Sendable {
     private let ud_deviceId = "macconnect.deviceId"
     private let ud_deviceName = "macconnect.deviceName"
     private let ud_trustedDevices = "macconnect.trustedDevices"
+    private let ud_disabledPlugins = "macconnect.disabledPlugins"
 
     public static let protocolVersion = 7
     public static let udpPort: UInt16 = 1716
@@ -66,6 +67,24 @@ public final class Settings: ObservableObject, @unchecked Sendable {
         var s = trustedDeviceIds
         s.remove(deviceId)
         trustedDeviceIds = s
+    }
+
+    public var disabledPluginIds: Set<String> {
+        get { Set(defaults.stringArray(forKey: ud_disabledPlugins) ?? []) }
+        set {
+            defaults.set(Array(newValue), forKey: ud_disabledPlugins)
+            DispatchQueue.main.async { self.objectWillChange.send() }
+        }
+    }
+
+    public func isPluginEnabled(_ pluginId: String) -> Bool {
+        !disabledPluginIds.contains(pluginId)
+    }
+
+    public func setPluginEnabled(_ pluginId: String, _ enabled: Bool) {
+        var s = disabledPluginIds
+        if enabled { s.remove(pluginId) } else { s.insert(pluginId) }
+        disabledPluginIds = s
     }
 
     private static func platformUUID() -> String? {
