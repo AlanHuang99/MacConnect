@@ -9,22 +9,23 @@ Working features:
 - UDP discovery on port 1716, with subnet-directed broadcasts on every active IPv4 interface.
 - Plain-TCP identity exchange followed by mutual TLS (TOFU on first pair, per-device certificate pinning afterwards).
 - Pair / unpair flow with explicit Accept/Reject prompts in both directions.
+- In-app recovery when a pinned peer's certificate changes (e.g. peer was reinstalled): the popover shows a "Certificate changed" warning with a Reset Trust button instead of failing silently.
 - Plugins:
   - Ping (send + receive, banner notification on receive).
   - Clipboard (manual push on outbound; auto-apply on inbound).
-  - Notifications (receive Android notifications as macOS banners).
+  - Notifications (receive Android notifications as macOS banners, with inline Reply for notifications that carry a `requestReplyId`).
   - Find My Phone (ring outbound).
   - Share (URL, text, and file payload — send and receive over a second TLS connection).
-- Menu-bar UI with a popover that lists discovered devices, their pair status, and per-device actions.
-- Settings panel: editable broadcast name, pinned-device list with Forget action.
+- Menu-bar UI with a popover that lists discovered devices, their pair status, last-seen age for offline peers, and per-device actions.
+- Settings panel: editable broadcast name, SHA-256 fingerprint display (local + per pinned peer), per-plugin enable/disable toggles, Launch-at-Login toggle, pinned-device list with Forget action.
+- Distribution: Release workflow builds a universal binary, signs with Apple Developer ID + Hardened Runtime, notarizes via App Store Connect API key, staples the ticket, and publishes a `.dmg` + `.zip` to a GitHub Release.
 
 Not implemented yet:
 
 - mDNS / Bonjour announcement (only legacy UDP broadcast is used).
 - MPRIS state parsing (packets are received but no media UI).
-- Notification reply.
-- Code signing / notarization for distribution.
-- Login Item registration.
+- macOS Share Extension (right-click → Share → MacConnect from Finder).
+- Clipboard image transfer.
 
 See [`ROADMAP.md`](ROADMAP.md) for upcoming work.
 
@@ -34,13 +35,7 @@ Download the latest release from [Releases](../../releases). Both a `.dmg` and a
 
 1. Open the DMG.
 2. Drag `MacConnect.app` to `Applications`.
-3. First launch: right-click `MacConnect.app` → **Open** → confirm in the dialog. macOS Gatekeeper warns once because the app is ad-hoc signed (no Apple Developer ID notarization yet).
-
-Alternative one-shot bypass:
-
-```bash
-xattr -dr com.apple.quarantine /Applications/MacConnect.app
-```
+3. Launch normally — the app is signed with Apple Developer ID and notarized, so Gatekeeper will not warn.
 
 The binary is universal (Apple Silicon + Intel) and requires macOS 13 or later.
 

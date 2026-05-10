@@ -136,8 +136,21 @@ struct DeviceRow: View {
         var bits: [String] = []
         bits.append(device.type.rawValue.capitalized)
         bits.append(device.isPaired ? "paired" : "not paired")
-        if device.isReachable { bits.append("online") }
+        if device.isReachable {
+            bits.append("online")
+        } else if let age = lastSeenAge {
+            bits.append("last seen \(age)")
+        }
         return bits.joined(separator: " · ")
+    }
+
+    private var lastSeenAge: String? {
+        guard !device.isReachable else { return nil }
+        let secs = Int(Date().timeIntervalSince(device.lastSeen))
+        if secs < 0 { return nil }
+        if secs < 60 { return "\(secs)s ago" }
+        if secs < 3600 { return "\(secs / 60)m ago" }
+        return "\(secs / 3600)h ago"
     }
 
     private var pairPrompt: some View {
