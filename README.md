@@ -28,7 +28,23 @@ Not implemented yet:
 
 See [`ROADMAP.md`](ROADMAP.md) for upcoming work.
 
-## Requirements
+## Install
+
+Download the latest release from [Releases](../../releases). Both a `.dmg` and a `.zip` of the `.app` bundle are published. The DMG is the friendlier option:
+
+1. Open the DMG.
+2. Drag `MacConnect.app` to `Applications`.
+3. First launch: right-click `MacConnect.app` → **Open** → confirm in the dialog. macOS Gatekeeper warns once because the app is ad-hoc signed (no Apple Developer ID notarization yet).
+
+Alternative one-shot bypass:
+
+```bash
+xattr -dr com.apple.quarantine /Applications/MacConnect.app
+```
+
+The binary is universal (Apple Silicon + Intel) and requires macOS 13 or later.
+
+## Requirements (development)
 
 - macOS 13 or later.
 - Xcode 15+ (or Command Line Tools, in which case `swift test` is unavailable because XCTest ships with Xcode).
@@ -39,6 +55,9 @@ See [`ROADMAP.md`](ROADMAP.md) for upcoming work.
 ```bash
 # Assemble a .app bundle
 ./scripts/build-app.sh release
+
+# Universal (arm64 + x86_64) build
+./scripts/build-app.sh release-universal 0.1.0
 
 # Launch
 open build/MacConnect.app
@@ -94,6 +113,17 @@ Notes specific to this implementation:
 - Discovery uses subnet-directed UDP broadcasts (e.g. `192.168.1.255`) on every active IPv4 interface in addition to limited broadcast (`255.255.255.255`). Limited broadcast alone is filtered by many Wi-Fi access points and bridges.
 - Per the protocol, the TCP-connect initiator becomes the TLS server and the TCP-accept side becomes the TLS client. The same channel is used for plain identity then upgraded to TLS via dynamic `ChannelPipeline` reconfiguration in `KDEConnectChannelHandler`.
 - File transfer opens a second TLS connection on a port advertised in `payloadTransferInfo.port`. The receiver writes the payload to `~/Downloads/`, with `(1)`, `(2)` suffixes on filename collisions.
+
+## Releases
+
+Releases are tagged `vX.Y.Z`. Pushing a tag triggers `.github/workflows/release.yml`, which builds a universal binary, ad-hoc codesigns it, packages it as a `.zip` and a drag-to-`/Applications` `.dmg`, and publishes a GitHub Release with both assets.
+
+To cut a release locally:
+
+```bash
+git tag v0.1.0
+git push origin v0.1.0
+```
 
 ## License
 

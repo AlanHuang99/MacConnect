@@ -1,0 +1,100 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Build and publish
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Resolve version from tag
+        id: ver
+        run: |
+          TAG="${GITHUB_REF#refs/tags/}"
+          VERSION="${TAG#v}"
+          echo "tag=$TAG"     >> "$GITHUB_OUTPUT"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Show toolchain
+        run: swift --version && xcodebuild -version
+
+      - name: Cache SwiftPM
+        uses: actions/cache@v4
+        with:
+          path: |
+            .build
+            ~/Library/Caches/org.swift.swiftpm
+          key: ${{ runner.os }}-spm-release-${{ hashFiles('Package.swift', 'Package.resolved') }}
+          restore-keys: |
+            ${{ runner.os }}-spm-
+
+      - name: Resolve dependencies
+        run: swift package resolve
+
+      - name: Build universal .app
+        run: ./scripts/build-app.sh release-universal "${{ steps.ver.outputs.version }}"
+
+      - name: Verify universal binary
+        run: |
+          file build/MacConnect.app/Contents/MacOS/MacConnect
+          lipo -info build/MacConnect.app/Contents/MacOS/MacConnect
+
+      - name: Ad-hoc codesign
+        run: codesign --force --deep --sign - build/MacConnect.app
+
+      - name: Verify signature
+        run: codesign --verify --verbose=2 build/MacConnect.app
+
+      - name: Zip .app
+        run: |
+          cd build
+          ditto -c -k --keepParent MacConnect.app "MacConnect-${{ steps.ver.outputs.tag }}.zip"
+
+      - name: Build DMG
+        run: |
+          STAGE="$(mktemp -d)"
+          cp -R build/MacConnect.app "$STAGE/"
+          ln -s /Applications "$STAGE/Applications"
+          hdiutil create \
+            -volname "MacConnect" \
+            -srcfolder "$STAGE" \
+            -ov -format UDZO \
+            "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg"
+
+      - name: Show release artifacts
+        run: ls -lh build/MacConnect-${{ steps.ver.outputs.tag }}.*
+
+      - name: Publish GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ steps.ver.outputs.tag }}" \
+            --title "MacConnect ${{ steps.ver.outputs.tag }}" \
+            --generate-notes \
+            --notes-file - <<'NOTES_EOF' \
+            "build/MacConnect-${{ steps.ver.outputs.tag }}.zip" \
+            "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg"
+
+          ## Install
+
+          1. Download `MacConnect-${{ steps.ver.outputs.tag }}.dmg` (or the `.zip`).
+          2. Open the DMG and drag MacConnect.app to Applications.
+          3. First launch: right-click MacConnect.app → **Open** → confirm in the
+             dialog. macOS Gatekeeper requires this once because the app is
+             ad-hoc signed (not Apple Developer ID notarized yet).
+             Alternative: run `xattr -dr com.apple.quarantine /Applications/MacConnect.app`.
+
+          Universal binary: arm64 + x86_64. Requires macOS 13+.
+
+          See [README](https://github.com/${{ github.repository }}/blob/main/README.md)
+          for what's working and what's not.
+          NOTES_EOF
