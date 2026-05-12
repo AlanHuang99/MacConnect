@@ -50,14 +50,16 @@ struct StatusView: View {
                 Image(systemName: "arrow.clockwise")
             }
             .buttonStyle(.borderless)
-            .help("Re-broadcast & re-discover")
+            .help("Re-broadcast & re-discover (⌘R)")
+            .keyboardShortcut("r", modifiers: .command)
             Button {
                 showingSettings = true
             } label: {
                 Image(systemName: "gearshape")
             }
             .buttonStyle(.borderless)
-            .help("Settings")
+            .help("Settings (⌘,)")
+            .keyboardShortcut(",", modifiers: .command)
         }
         .padding(12)
     }
@@ -70,13 +72,27 @@ struct StatusView: View {
                 .foregroundStyle(.secondary)
             Text("Searching for devices…")
                 .foregroundStyle(.secondary)
-            Text("Make sure KDE Connect is running on your phone\nand both devices are on the same Wi-Fi.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
+            VStack(alignment: .leading, spacing: 4) {
+                checklistItem("KDE Connect is running on the other device")
+                checklistItem("Both devices are on the same Wi-Fi network")
+                checklistItem("Local-network access allowed for MacConnect")
+                checklistItem("Wi-Fi router isn't blocking peer-to-peer (AP isolation off)")
+            }
+            .font(.caption)
+            .foregroundStyle(.secondary)
+            .padding(.horizontal, 24)
             Spacer()
         }
         .frame(maxWidth: .infinity)
+    }
+
+    private func checklistItem(_ text: String) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 6) {
+            Image(systemName: "checkmark.circle")
+                .font(.caption2)
+            Text(text)
+            Spacer()
+        }
     }
 
     private var footer: some View {
@@ -87,6 +103,7 @@ struct StatusView: View {
             Spacer()
             Button("Quit") { NSApp.terminate(nil) }
                 .buttonStyle(.borderless)
+                .keyboardShortcut("q", modifiers: .command)
         }
         .padding(8)
     }
@@ -157,10 +174,39 @@ struct DeviceRow: View {
         VStack(alignment: .leading, spacing: 6) {
             Text("Pair request from this device?")
                 .font(.caption)
+            if let fp = CertificateService.shared.fingerprint(forTrustedDeviceId: device.id) {
+                VStack(alignment: .leading, spacing: 2) {
+                    Text("Verify this fingerprint matches the one shown on \(device.name):")
+                        .font(.caption2).foregroundStyle(.secondary)
+                    fingerprintRow(fp)
+                }
+            }
             HStack {
                 Button("Accept") { DeviceManager.shared.acceptPairing(device) }
                 Button("Reject") { DeviceManager.shared.rejectPairing(device) }
             }
+        }
+    }
+
+    /// One-line, monospaced fingerprint with a Copy button so users can
+    /// paste-compare against the other device's display.
+    private func fingerprintRow(_ fingerprint: String, highlight: Color? = nil) -> some View {
+        HStack(spacing: 4) {
+            Text(fingerprint)
+                .font(.system(.caption2, design: .monospaced))
+                .foregroundStyle(highlight ?? .primary)
+                .textSelection(.enabled)
+                .lineLimit(2)
+                .truncationMode(.middle)
+            Button {
+                NSPasteboard.general.clearContents()
+                NSPasteboard.general.setString(fingerprint, forType: .string)
+            } label: {
+                Image(systemName: "doc.on.doc")
+                    .font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .help("Copy fingerprint")
         }
     }
 
@@ -193,18 +239,11 @@ struct DeviceRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 if let pinned {
                     Text("Pinned").font(.caption2).foregroundStyle(.secondary)
-                    Text(pinned)
-                        .font(.system(.caption2, design: .monospaced))
-                        .textSelection(.enabled)
-                        .lineLimit(2)
+                    fingerprintRow(pinned)
                 }
                 if let presented {
                     Text("Presented").font(.caption2).foregroundStyle(.secondary)
-                    Text(presented)
-                        .font(.system(.caption2, design: .monospaced))
-                        .foregroundStyle(.orange)
-                        .textSelection(.enabled)
-                        .lineLimit(2)
+                    fingerprintRow(presented, highlight: .orange)
                 }
             }
         }
