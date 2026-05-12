@@ -5,11 +5,29 @@ public final class PluginRegistry: @unchecked Sendable {
 
     private let queue = DispatchQueue(label: "macconnect.pluginregistry")
     private var _plugins: [Plugin] = []
+    /// Cached enabled-plugin capability lists. Identity broadcasts read these
+    /// every 5 s; recomputing meant set-build + sort each tick. Cache is
+    /// invalidated on registration and on plugin enable/disable.
+    private var cachedIncoming: [String]?
+    private var cachedOutgoing: [String]?
 
     public init() {}
 
     public func register(_ plugin: Plugin) {
-        queue.sync { _plugins.append(plugin) }
+        queue.sync {
+            _plugins.append(plugin)
+            cachedIncoming = nil
+            cachedOutgoing = nil
+        }
+    }
+
+    /// Drop the cached capability lists. `Settings.setPluginEnabled` calls
+    /// this so broadcasts pick up new state on the next refresh.
+    public func invalidateCapabilityCache() {
+        queue.sync {
+            cachedIncoming = nil
+            cachedOutgoing = nil
+        }
     }
 
     public var plugins: [Plugin] {
@@ -27,11 +45,23 @@ public final class PluginRegistry: @unchecked Sendable {
     }
 
     public var allIncomingCapabilities: [String] {
-        Array(Set(enabledPlugins.flatMap(\.incomingCapabilities))).sorted()
+        queue.sync {
+            if let cachedIncoming { return cachedIncoming }
+            let enabled = _plugins.filter { Settings.shared.isPluginEnabled($0.identifier) }
+            let value = Array(Set(enabled.flatMap(\.incomingCapabilities))).sorted()
+            cachedIncoming = value
+            return value
+        }
     }
 
     public var allOutgoingCapabilities: [String] {
-        Array(Set(enabledPlugins.flatMap(\.outgoingCapabilities))).sorted()
+        queue.sync {
+            if let cachedOutgoing { return cachedOutgoing }
+            let enabled = _plugins.filter { Settings.shared.isPluginEnabled($0.identifier) }
+            let value = Array(Set(enabled.flatMap(\.outgoingCapabilities))).sorted()
+            cachedOutgoing = value
+            return value
+        }
     }
 
     @MainActor

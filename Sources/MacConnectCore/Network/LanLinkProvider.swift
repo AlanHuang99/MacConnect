@@ -17,6 +17,10 @@ public final class LanLinkProvider: @unchecked Sendable {
     private var serverChannel: Channel?
     private var tcpPort: UInt16 = Settings.minTCPPort
     private var broadcastTimer: DispatchSourceTimer?
+    /// Long-lived UDP socket used for the periodic identity broadcast.
+    /// `-1` means closed / not yet opened. Opened once in `start()`, reused
+    /// every 5 s instead of socket-create-then-close on each tick.
+    private var broadcastFD: Int32 = -1
     private let linkLock = NSLock()
     private var channelToDeviceId: [ObjectIdentifier: String] = [:]
     private var linksByDeviceId: [String: LanLink] = [:]
@@ -54,8 +58,21 @@ public final class LanLinkProvider: @unchecked Sendable {
 
         try startUDPListener()
         startMDNSBrowser()
+        openBroadcastSocket()
         startBroadcastTimer()
         broadcastIdentity()
+    }
+
+    private func openBroadcastSocket() {
+        let fd = socket(AF_INET, SOCK_DGRAM, 0)
+        guard fd >= 0 else {
+            Log.net.error("socket() for broadcast failed errno=\(errno, privacy: .public)")
+            return
+        }
+        var yes: Int32 = 1
+        _ = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, socklen_t(MemoryLayout<Int32>.size))
+        _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
+        broadcastFD = fd
     }
 
     public func stop() {
@@ -65,6 +82,10 @@ public final class LanLinkProvider: @unchecked Sendable {
         udpListener = nil
         mdnsBrowser?.cancel()
         mdnsBrowser = nil
+        if broadcastFD >= 0 {
+            close(broadcastFD)
+            broadcastFD = -1
+        }
 
         // Take a snapshot under the lock then close outside it; the
         // close-future callbacks (notifyClosed → DeviceManager.detach) hop
@@ -291,10 +312,11 @@ public final class LanLinkProvider: @unchecked Sendable {
         )
 
         listener.newConnectionHandler = { [weak self] incoming in
-            incoming.start(queue: self?.queue ?? .main)
+            let provider = self
+            incoming.start(queue: provider?.queue ?? .main)
             incoming.receiveMessage { data, _, _, _ in
-                guard let self, let data else { return }
-                self.handleUDPIdentity(data, from: incoming.endpoint)
+                guard let provider, let data else { return }
+                provider.handleUDPIdentity(data, from: incoming.endpoint)
                 incoming.cancel()
             }
         }
@@ -428,6 +450,7 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     public func broadcastIdentity() {
         guard serverChannel != nil else { return }
+        guard broadcastFD >= 0 else { return }
         let identity = Settings.shared.ownIdentity(tcpPort: Int(tcpPort))
         guard let data = try? identity.toPacket().serialized() else { return }
 
@@ -438,17 +461,7 @@ public final class LanLinkProvider: @unchecked Sendable {
             Log.net.warning("No broadcast-capable IPv4 interfaces found")
         }
 
-        let fd = socket(AF_INET, SOCK_DGRAM, 0)
-        guard fd >= 0 else {
-            Log.net.error("socket() failed errno=\(errno, privacy: .public)")
-            return
-        }
-        defer { close(fd) }
-
-        var yes: Int32 = 1
-        _ = setsockopt(fd, SOL_SOCKET, SO_BROADCAST, &yes, socklen_t(MemoryLayout<Int32>.size))
-        _ = setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &yes, socklen_t(MemoryLayout<Int32>.size))
-
+        let fd = broadcastFD
         var ok = 0
         for addr in targets.sorted() {
             var sin = sockaddr_in()

@@ -85,6 +85,9 @@ public final class Settings: ObservableObject, @unchecked Sendable {
         var s = disabledPluginIds
         if enabled { s.remove(pluginId) } else { s.insert(pluginId) }
         disabledPluginIds = s
+        // Capability lists derive from this set; flush the cache so the
+        // next identity broadcast advertises the new state.
+        PluginRegistry.shared.invalidateCapabilityCache()
     }
 
     private static func platformUUID() -> String? {

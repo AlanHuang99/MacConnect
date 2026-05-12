@@ -222,6 +222,89 @@ crash on double-fulfil. Guard each site with a once-and-only flag.
 - Verification: `swift build` PASS.
 - Self-score: 3 / 3.
 
+## Milestone B — Performance pass
+
+### Task B1 + B5 — PayloadReceiver writes off event loop, no-alloc reads (6 + 2 pts)
+
+**Restatement.** `PayloadReceiverHandler.channelRead` previously did
+`Array(buf.readableBytesView)` and `fileHandle.write(contentsOf:)` synchronously
+on the event loop — a multi-GB receive starved every other channel on the same
+loop. Move disk writes to a serial `DispatchQueue` and avoid the per-chunk
+Array allocation by copying once via `withUnsafeReadableBytes` into a
+size-allocated `Data`.
+
+**Implementation.**
+- Files changed: `Sources/MacConnectCore/Network/PayloadTransport.swift`
+- Per-chunk flow:
+  1. `channelRead` (event loop) copies bytes from the `ByteBuffer` into a
+     correctly-sized `Data` (`withUnsafeReadableBytes` → `copyMemory`).
+  2. Schedules the write on a serial `DispatchQueue(label: ...write)`
+     chained off the previous write's completion future (preserves order).
+  3. Disk-write completion hops back to the event loop to update
+     `bytesReceived` and check the done condition.
+- `channelInactive` now awaits the in-flight write chain before deciding
+  success — previously could see `bytesReceived < expected` while a chunk
+  was still in flight.
+- Verification: `swift build` clean. Manual: 200 MB transfer not yet run.
+- Self-score: B1 5/6 (no backpressure plumbing — NIO's autoread still
+  drives reads as fast as the network delivers; if disk is slower than
+  network, the writeQueue's task list can grow). B5: 2/2.
+
+### Task B2 — Cache PluginRegistry capability lists (2 pts)
+
+**Restatement.** Identity broadcasts read `allIncomingCapabilities` and
+`allOutgoingCapabilities` every 5 s, each call allocating a fresh `Set` and
+sorting. Cache the result behind the registry's serial queue; invalidate on
+`register` and on `Settings.setPluginEnabled`.
+
+**Implementation.**
+- Files changed:
+  - `Sources/MacConnectCore/Plugin/PluginRegistry.swift` — cached
+    `cachedIncoming` / `cachedOutgoing` arrays; new
+    `invalidateCapabilityCache()` entry point.
+  - `Sources/MacConnectCore/Settings/Settings.swift` —
+    `setPluginEnabled` calls `invalidateCapabilityCache()`.
+- Self-score: 2 / 2.
+
+### Task B3 — Long-lived UDP broadcast socket (3 pts)
+
+**Restatement.** `broadcastIdentity()` opened, configured, and closed a UDP
+socket on every 5 s tick. Open once at `start()`, reuse, close at `stop()`.
+
+**Implementation.**
+- Files changed: `Sources/MacConnectCore/Network/LanLinkProvider.swift`
+- `broadcastFD` ivar, opened in new `openBroadcastSocket()` after the TCP
+  listener binds. Closed in `stop()`. `broadcastIdentity` no longer
+  manages a socket — just `sendto`s on the cached fd.
+- Self-score: 3 / 3.
+
+### Task B4 — Incremental firstLF (2 pts)
+
+**Restatement.** `firstLF` re-scanned the entire read buffer on every read.
+Add a cursor that persists across calls; only scan new bytes.
+
+**Implementation.**
+- Files changed: `Sources/MacConnectCore/Network/KDEConnectChannelHandler.swift`
+- `firstLFSearchedBytes` cursor. On miss, store how far we scanned. On hit,
+  reset (caller will consume bytes). Buffer-shrunk safety check resets if
+  the cursor outstrips remaining bytes (paranoia; in practice never
+  triggers because of the post-hit reset).
+- Self-score: 2 / 2.
+
+### Task B6 — Strict concurrency mode (5 pts)
+
+**Restatement.** Enable `.enableUpcomingFeature("StrictConcurrency")` on
+both targets. Fix any warnings.
+
+**Implementation.**
+- Files changed: `Package.swift`, `Sources/MacConnectCore/Network/LanLinkProvider.swift`
+- One warning surfaced: `newConnectionHandler` was capturing the unwrapped
+  weak `self` in a nested concurrently-executing closure. Rebind to a let
+  in the outer scope, same pattern already used elsewhere in the file.
+- Verification: `swift build` clean with `-strict-concurrency=complete`.
+  `swift test` 8 / 8 green.
+- Self-score: 5 / 5.
+
 ### Task A8 — In-process pairing smoke test (8 pts)
 
 **Restatement.** Brief asks for two `LanLinkProvider`s in-process pairing,

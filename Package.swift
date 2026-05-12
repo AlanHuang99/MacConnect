@@ -21,12 +21,18 @@ let package = Package(
                 .product(name: "NIOTLS", package: "swift-nio"),
                 .product(name: "NIOSSL", package: "swift-nio-ssl"),
             ],
-            path: "Sources/MacConnectCore"
+            path: "Sources/MacConnectCore",
+            swiftSettings: [
+                .enableUpcomingFeature("StrictConcurrency"),
+            ]
         ),
         .executableTarget(
             name: "MacConnectApp",
             dependencies: ["MacConnectCore"],
-            path: "Sources/MacConnectApp"
+            path: "Sources/MacConnectApp",
+            swiftSettings: [
+                .enableUpcomingFeature("StrictConcurrency"),
+            ]
         ),
         .testTarget(
             name: "MacConnectCoreTests",
