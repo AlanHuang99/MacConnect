@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 import MacConnectCore
 
 struct StatusView: View {
@@ -111,6 +112,7 @@ struct StatusView: View {
 
 struct DeviceRow: View {
     @ObservedObject var device: Device
+    @State private var isDropTarget: Bool = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -137,6 +139,29 @@ struct DeviceRow: View {
             }
         }
         .padding(.horizontal, 12)
+        .padding(.vertical, isDropTarget ? 4 : 0)
+        .background(isDropTarget ? Color.accentColor.opacity(0.15) : Color.clear)
+        .animation(.easeOut(duration: 0.12), value: isDropTarget)
+        // Accept file drops only on devices we can actually send to.
+        .onDrop(of: [.fileURL], isTargeted: device.isPaired && device.isReachable ? $isDropTarget : nil) { providers in
+            handleDrop(providers: providers)
+        }
+    }
+
+    private func handleDrop(providers: [NSItemProvider]) -> Bool {
+        guard device.isPaired, device.isReachable else { return false }
+        var accepted = false
+        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+            accepted = true
+            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                guard let data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil, isAbsolute: true) else { return }
+                Task { @MainActor in
+                    SharePlugin.sendFile(url, to: device)
+                }
+            }
+        }
+        return accepted
     }
 
     private var deviceSymbol: String {
