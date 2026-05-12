@@ -119,3 +119,26 @@ to 300 s so it only fires when a socket is truly wedged.
 - Notes: `LanLink.lastPacketReceived` is exposed for future use (the brief
   hinted at a UI consumer); currently no code reads it.
 
+### Task A3 — Strong Device.link reference (3 pts)
+
+**Restatement.** `Device.link` was `weak`. Provider drops the link from
+`linksByDeviceId` during `handleClosed`, and a UI handler holding a stale
+`Device` then sees `device.link == nil` even though `device.isReachable` is
+still `true` — sends silently no-op. Make `link` strong and rely on
+`DeviceManager.detach` setting it to `nil` explicitly.
+
+**Implementation.**
+- Files changed: `Sources/MacConnectCore/Device/Device.swift`,
+  `Sources/MacConnectCore/Network/LanLink.swift`
+- Tests added: covered by A8 smoke test.
+- Verification:
+  - `swift build`: PASS, no warnings.
+  - `swift test`: PASS (3/3).
+- Retain-cycle review: `LanLink` closures capture `LanLinkProvider` weakly and
+  never reference `Device`; `Device` does not hold any closure that retains a
+  `LanLink`. Two strong owners (Device + linksByDeviceId) drop in lockstep
+  through `handleClosed` → `DeviceManager.detach` → `device.link = nil` plus
+  `linksByDeviceId.removeValue`. DEBUG-only deinit log on `LanLink` verifies
+  it actually runs.
+- Self-score: 3 / 3.
+

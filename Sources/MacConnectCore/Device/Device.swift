@@ -21,7 +21,13 @@ public final class Device: ObservableObject, Identifiable {
     public var incomingCapabilities: [String]
     public var outgoingCapabilities: [String]
 
-    weak var link: LanLink?
+    /// Strong reference to the active link for this device. `LanLinkProvider`
+    /// also holds the link by deviceId; both owners drop their references
+    /// together when `DeviceManager.detach` runs on a `handleClosed`
+    /// notification. A previous `weak` here meant the link could go nil
+    /// between provider-cleanup and device-row read, surfacing as
+    /// "device shows online but sends do nothing".
+    var link: LanLink?
 
     public init(identity: IdentityPayload, paired: Bool) {
         self.id = identity.deviceId

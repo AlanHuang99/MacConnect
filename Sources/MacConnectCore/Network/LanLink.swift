@@ -34,6 +34,9 @@ public final class LanLink: @unchecked Sendable {
         // link is dropped without that path running (e.g. test teardown) the
         // scheduled task would keep firing on the event loop.
         heartbeatTask?.cancel()
+#if DEBUG
+        Log.net.debug("LanLink deinit: \(self.deviceId, privacy: .public)")
+#endif
     }
 
     public var isSecure: Bool {
