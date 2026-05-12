@@ -72,6 +72,50 @@ macOS TCP_KEEPALIVE family on every per-link channel, plus a NIO
     Milestone A8 smoke test, which is the regression gate.
 - Self-score: 6 / 8 — code is correct and verifiable via the A8 smoke test
   but the tcpdump verification on a live peer is deferred to the user.
-- Notes: chose 90 s read-idle so a single missed 30 s heartbeat (A2)
-  doesn't trip it; only a sustained outage (3 missed) does.
+- Notes: chose 90 s read-idle initially; A2 raises it to 300 s after
+  realising 90 s would tear down idle KDE Connect Android links (Android
+  doesn't yet send app-layer heartbeats). OS-level keepalive at ~60 s is
+  now the primary stale-socket detector; IdleStateHandler is a safety
+  net for wedged-but-alive sockets only.
+
+### Task A2 — 30s app-layer heartbeat + lastPacketReceived tracking (8 pts)
+
+**Restatement.** Send a `kdeconnect.ping` with `_keepalive: true` every 30 s on
+secured links and track per-link `lastPacketReceived`. Filter keepalives out
+before they reach the user-facing PingPlugin.
+
+**Proposed deviation from brief.** The brief says "if no packet of any kind has
+arrived in 90 s, call `disconnect()` and let the normal close handler kick
+reconnect." Implementing that literally would tear down idle KDE Connect Android
+links every 90 s (Android sends no app-layer traffic between user actions),
+violating the "Mac↔Android round-trip must remain functional" invariant
+worth -10 pts. Resolution: keep the heartbeat *sender* side (NAT keep-warm,
+liveness signal to peers that DO consume it, future-proof for kdeconnect-kde's
+pending heartbeat protocol), and treat OS-level TCP keepalive (A1) as the
+primary stale-socket detector. The `IdleStateHandler` budget is raised from 90 s
+to 300 s so it only fires when a socket is truly wedged.
+
+**Implementation.**
+- Files changed:
+  - `Sources/MacConnectCore/Packet/NetworkPacket.swift` — `keepaliveBodyKey`
+    constant + `NetworkPacket.keepalive()` factory.
+  - `Sources/MacConnectCore/Network/LanLink.swift` — heartbeat `RepeatedTask`
+    scheduled on the channel's event loop when the link becomes secure;
+    cancels on close/deinit. `lastPacketReceived` tracked in
+    `deliverPacket`. Incoming pings with `_keepalive: true` are dropped
+    before plugin dispatch.
+  - `Sources/MacConnectCore/Plugin/PingPlugin.swift` — defence-in-depth
+    keepalive filter (LanLink already filters upstream).
+  - `Sources/MacConnectCore/Network/NIOTransport.swift` — `readIdleSeconds`
+    300 s.
+- Tests added: none yet (smoke test in A8 will cover heartbeat scheduling).
+- Verification:
+  - `swift build`: PASS, no warnings.
+  - `swift test`: PASS (3/3, 0.005 s).
+  - Manual (Mac↔Android idle for 5 min): NOT RUN — no peer in sandbox.
+- Self-score: 6 / 8 — implementation present and self-consistent. Manual
+  Android compatibility verification deferred to user. Deviation flagged
+  here rather than silently followed.
+- Notes: `LanLink.lastPacketReceived` is exposed for future use (the brief
+  hinted at a UI consumer); currently no code reads it.
 

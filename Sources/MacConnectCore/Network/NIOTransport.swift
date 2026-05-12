@@ -17,11 +17,13 @@ public final class NIOTransport: @unchecked Sendable {
     public static let keepaliveIntervalSeconds: Int32 = 10
     public static let keepaliveCount: Int32 = 3
     /// Belt-and-braces above OS keepalive: if no bytes (encrypted or app-layer
-    /// heartbeat) arrive for this long, close the channel. Set higher than
-    /// `3 × LanLink.heartbeatInterval` so a normal heartbeat run keeps it
-    /// quiet, and lower than the worst-case TCP keepalive close
-    /// (~60 s) so the two mechanisms reinforce each other.
-    public static let readIdleSeconds: Int64 = 90
+    /// heartbeat) arrive for this long, close the channel. Set generously
+    /// because KDE Connect Android does not yet send any application-layer
+    /// traffic on idle links — a short timeout would tear down a healthy
+    /// idle phone repeatedly. The OS-level TCP keepalive (60 s detection)
+    /// is the primary stale-socket signal; this only catches the rare case
+    /// where the OS thinks the connection is alive but the app is wedged.
+    public static let readIdleSeconds: Int64 = 300
 
     private init() {
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
