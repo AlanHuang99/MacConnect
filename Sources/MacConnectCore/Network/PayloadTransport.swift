@@ -25,6 +25,7 @@ public enum PayloadTransport {
     public static func startSender(
         fileURL: URL,
         peerDeviceId: String,
+        onProgress: (@Sendable (Int64) -> Void)? = nil,
         onComplete: @escaping @Sendable () -> Void,
         onError: @escaping @Sendable (Error) -> Void
     ) -> (port: UInt16, finished: EventLoopFuture<Void>) {
@@ -61,6 +62,7 @@ public enum PayloadTransport {
                 )
                 let payload = PayloadSenderHandler(
                     fileURL: fileURL,
+                    onProgress: onProgress,
                     onComplete: {
                         onComplete()
                         trySucceed()
@@ -126,6 +128,7 @@ public enum PayloadTransport {
         fileURL: URL,
         expectedSize: Int64,
         peerDeviceId: String,
+        onProgress: (@Sendable (Int64) -> Void)? = nil,
         onComplete: @escaping @Sendable () -> Void,
         onError: @escaping @Sendable (Error) -> Void
     ) {
@@ -143,6 +146,7 @@ public enum PayloadTransport {
                     let receiver = PayloadReceiverHandler(
                         fileURL: fileURL,
                         expectedSize: expectedSize,
+                        onProgress: onProgress,
                         onComplete: onComplete,
                         onError: onError
                     )
@@ -172,6 +176,7 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
 
     private let fileURL: URL
+    private let onProgress: (@Sendable (Int64) -> Void)?
     private let onComplete: @Sendable () -> Void
     private let onError: @Sendable (Error) -> Void
     private var streaming = false
@@ -179,10 +184,12 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
 
     init(
         fileURL: URL,
+        onProgress: (@Sendable (Int64) -> Void)? = nil,
         onComplete: @escaping @Sendable () -> Void,
         onError: @escaping @Sendable (Error) -> Void
     ) {
         self.fileURL = fileURL
+        self.onProgress = onProgress
         self.onComplete = onComplete
         self.onError = onError
     }
@@ -207,10 +214,12 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
         let allocator = context.channel.allocator
         let channel = context.channel
 
+        let progress = onProgress
         queue.async { [self] in
             do {
                 let handle = try FileHandle(forReadingFrom: url)
                 defer { try? handle.close() }
+                var totalSent: Int64 = 0
                 while true {
                     let chunk = handle.readData(ofLength: PayloadTransport.chunkBytes)
                     if chunk.isEmpty { break }
@@ -227,6 +236,8 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
                         channel.eventLoop.execute { channel.close(promise: nil) }
                         return
                     }
+                    totalSent += Int64(chunk.count)
+                    progress?(totalSent)
                 }
                 channel.eventLoop.execute {
                     self.onComplete()
@@ -248,6 +259,7 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private let fileURL: URL
     private let expectedSize: Int64
+    private let onProgress: (@Sendable (Int64) -> Void)?
     private let onComplete: @Sendable () -> Void
     private let onError: @Sendable (Error) -> Void
 
@@ -276,11 +288,13 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
     init(
         fileURL: URL,
         expectedSize: Int64,
+        onProgress: (@Sendable (Int64) -> Void)? = nil,
         onComplete: @escaping @Sendable () -> Void,
         onError: @escaping @Sendable (Error) -> Void
     ) {
         self.fileURL = fileURL
         self.expectedSize = expectedSize
+        self.onProgress = onProgress
         self.onComplete = onComplete
         self.onError = onError
     }
@@ -336,6 +350,7 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
                     eventLoop.execute {
                         self.bytesReceived += Int64(byteCount)
                         self.completeOneWrite(channel: channel)
+                        self.onProgress?(self.bytesReceived)
                         if self.expectedSize > 0, self.bytesReceived >= self.expectedSize {
                             self.finish(on: channel, success: true)
                         }
