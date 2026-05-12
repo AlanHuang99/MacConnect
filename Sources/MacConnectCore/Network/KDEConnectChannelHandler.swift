@@ -32,6 +32,14 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
         case ready
     }
 
+    /// Max bytes we'll buffer in each state before declaring the peer hostile
+    /// and closing. The plain-identity bound protects against a peer that
+    /// never sends `\n`; the post-handshake bound caps any single control
+    /// packet (payload transfers use a separate channel and never get this
+    /// large here).
+    private static let plainIdentityBufferLimit = 64 * 1024
+    private static let readyBufferLimit = 4 * 1024 * 1024
+
     private let role: Role
     private var state: State = .awaitingPlainIdentity
     private var readBuffer = ByteBuffer()
@@ -78,6 +86,19 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
     public func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         var inbound = unwrapInboundIn(data)
         readBuffer.writeBuffer(&inbound)
+
+        let limit: Int
+        switch state {
+        case .awaitingPlainIdentity, .awaitingTLSHandshake:
+            limit = Self.plainIdentityBufferLimit
+        case .ready:
+            limit = Self.readyBufferLimit
+        }
+        if readBuffer.readableBytes > limit {
+            Log.net.error("Read buffer overflow (\(self.readBuffer.readableBytes, privacy: .public) > \(limit, privacy: .public)) for \(self.peerDeviceId ?? "?", privacy: .public); closing channel")
+            context.close(promise: nil)
+            return
+        }
 
         switch state {
         case .awaitingPlainIdentity:

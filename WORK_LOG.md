@@ -142,3 +142,16 @@ still `true` — sends silently no-op. Make `link` strong and rely on
   it actually runs.
 - Self-score: 3 / 3.
 
+### Task A4 — Cap channel readBuffer (3 pts)
+
+**Restatement.** `readBuffer` was unbounded. A peer (or attacker) that never
+sends `\n` would balloon it. Cap at 64 KiB during identity exchange and 4 MiB
+post-handshake; close cleanly on overflow.
+
+**Implementation.**
+- Files changed: `Sources/MacConnectCore/Network/KDEConnectChannelHandler.swift`
+- Tests added: smoke test will cover happy path; future test should drive a
+  forced-overflow case once a test harness for `channelRead` exists.
+- Verification: `swift build` PASS, `swift test` PASS.
+- Self-score: 3 / 3.
+
