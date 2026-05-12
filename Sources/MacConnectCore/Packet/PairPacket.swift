@@ -6,7 +6,11 @@ public enum PairPacketBuilder {
             type: PacketType.pair,
             body: [
                 "pair": .bool(true),
-                "timestamp": .int(Int64(Date().timeIntervalSince1970)),
+                // KDE Connect's protocol expects this as milliseconds since
+                // epoch (Android: `System.currentTimeMillis()`); seconds
+                // would be ~1e9 and indistinguishable from a bug-clocked
+                // peer. Some Android builds reject seconds-scale values.
+                "timestamp": .int(Int64(Date().timeIntervalSince1970 * 1000)),
             ]
         )
     }

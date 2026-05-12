@@ -30,7 +30,11 @@ let package = Package(
         ),
         .testTarget(
             name: "MacConnectCoreTests",
-            dependencies: ["MacConnectCore"],
+            dependencies: [
+                "MacConnectCore",
+                .product(name: "NIOEmbedded", package: "swift-nio"),
+                .product(name: "NIOSSL", package: "swift-nio-ssl"),
+            ],
             path: "Tests/MacConnectCoreTests"
         ),
     ]
