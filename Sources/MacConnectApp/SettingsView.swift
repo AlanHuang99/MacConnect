@@ -86,11 +86,32 @@ struct SettingsView: View {
                             }
                         }
                     }
+
+                    section("About") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            labelValue("Version", Self.appVersion)
+                            labelValue("Build", Self.appBuild)
+                            HStack {
+                                Text("Source").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Link("github.com/AlanHuang99/MacConnect",
+                                     destination: URL(string: "https://github.com/AlanHuang99/MacConnect")!)
+                                    .font(.caption)
+                            }
+                        }
+                    }
                 }
                 .padding(12)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    private static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+    private static var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev"
     }
 
     @ViewBuilder
