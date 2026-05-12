@@ -65,6 +65,19 @@ public final class LanLinkProvider: @unchecked Sendable {
         udpListener = nil
         mdnsBrowser?.cancel()
         mdnsBrowser = nil
+
+        // Take a snapshot under the lock then close outside it; the
+        // close-future callbacks (notifyClosed → DeviceManager.detach) hop
+        // back to the main actor and would deadlock if held under linkLock.
+        linkLock.lock()
+        let activeLinks = Array(linksByDeviceId.values)
+        linksByDeviceId.removeAll()
+        channelToDeviceId.removeAll()
+        linkLock.unlock()
+        for link in activeLinks {
+            try? link.activeChannel.close().wait()
+        }
+
         try? serverChannel?.close().wait()
         serverChannel = nil
     }

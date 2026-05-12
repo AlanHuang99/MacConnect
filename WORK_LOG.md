@@ -155,6 +155,25 @@ post-handshake; close cleanly on overflow.
 - Verification: `swift build` PASS, `swift test` PASS.
 - Self-score: 3 / 3.
 
+### Task A6 — Clean shutdown (3 pts)
+
+**Restatement.** `NSApp.terminate(nil)` exits without ever calling
+`LanLinkProvider.stop()`. The dispatch timer + open child channels are torn
+down by the OS rather than the app, which is fine in practice but logs
+noisy "channel inactive while expected ready" warnings and offers no clean
+seam for future on-quit work (e.g. unsubscribe from MPRIS).
+
+**Implementation.**
+- Files changed:
+  - `Sources/MacConnectApp/AppDelegate.swift` — implement
+    `applicationWillTerminate` calling `LanLinkProvider.shared.stop()`.
+  - `Sources/MacConnectCore/Network/LanLinkProvider.swift` — `stop()` now
+    snapshots `linksByDeviceId` under the lock and closes each link's
+    active channel synchronously before closing the listener. Snapshot-out
+    pattern avoids deadlock with the main-actor close callback.
+- Verification: `swift build` PASS.
+- Self-score: 3 / 3.
+
 ### Task A7 — Fix PayloadTransport double-fulfil race (3 pts)
 
 **Restatement.** `startSender`'s `donePromise` can be fulfilled by three

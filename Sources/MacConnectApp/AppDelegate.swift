@@ -25,6 +25,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         registerServices()
     }
 
+    func applicationWillTerminate(_ notification: Notification) {
+        // Tears down the broadcast timer, UDP/mDNS listeners, all live
+        // per-device channels, and the TCP listener. Without this, AppKit
+        // killed the process while NIO event loops still had open sockets
+        // — fine for the OS, noisy in logs.
+        LanLinkProvider.shared.stop()
+    }
+
     private func registerServices() {
         NSApp.servicesProvider = self
         // Tell Launch Services to re-scan our Info.plist for NSServices, so
