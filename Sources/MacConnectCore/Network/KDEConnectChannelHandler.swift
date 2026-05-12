@@ -100,6 +100,15 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
             // Any plaintext bytes already buffered post-handshake (rare) drain now.
             drainReadyPackets()
         }
+        if let idle = event as? IdleStateHandler.IdleStateEvent, idle == .read {
+            // The IdleStateHandler upstream of us fired a read-timeout. Either
+            // the OS-level TCP keepalive has already torn the socket down and
+            // we haven't noticed, or the peer is silently wedged. Closing
+            // releases the link so the next discovery tick can reconnect.
+            Log.net.notice("Read-idle timeout for \(self.peerDeviceId ?? "?", privacy: .public); closing channel")
+            context.close(promise: nil)
+            return
+        }
         context.fireUserInboundEventTriggered(event)
     }
 

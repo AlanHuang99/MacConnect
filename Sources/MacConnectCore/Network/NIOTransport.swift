@@ -1,4 +1,5 @@
 import Foundation
+import Darwin
 import NIOCore
 import NIOPosix
 import NIOSSL
@@ -8,6 +9,19 @@ public final class NIOTransport: @unchecked Sendable {
 
     public let group: EventLoopGroup
     public let sslContext: NIOSSLContext
+
+    /// macOS-default keepalive (~2 h) is far too long for a portable peer.
+    /// Override per-connection so a dead Wi-Fi / sleeping phone is detected
+    /// in ~60 s and the link can reconnect on the next discovery tick.
+    public static let keepaliveIdleSeconds: Int32 = 30
+    public static let keepaliveIntervalSeconds: Int32 = 10
+    public static let keepaliveCount: Int32 = 3
+    /// Belt-and-braces above OS keepalive: if no bytes (encrypted or app-layer
+    /// heartbeat) arrive for this long, close the channel. Set higher than
+    /// `3 × LanLink.heartbeatInterval` so a normal heartbeat run keeps it
+    /// quiet, and lower than the worst-case TCP keepalive close
+    /// (~60 s) so the two mechanisms reinforce each other.
+    public static let readIdleSeconds: Int64 = 90
 
     private init() {
         self.group = MultiThreadedEventLoopGroup(numberOfThreads: 2)
@@ -33,18 +47,30 @@ public final class NIOTransport: @unchecked Sendable {
             .serverChannelOption(ChannelOptions.backlog, value: 64)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { [self] channel in
-                let handler = KDEConnectChannelHandler(
-                    role: .inbound,
-                    sslContext: sslContext,
-                    onIdentity: { identity, ch in onIdentity(identity, ch) },
-                    onPacket: { packet in onPacket(packet, channel) },
-                    onSecured: { onSecured(channel) },
-                    onClose: { err in onClose(channel, err) }
-                )
-                return channel.pipeline.addHandler(handler)
+                // syncOperations sidesteps the (unavailable) Sendable
+                // conformance on IdleStateHandler. The initializer runs on
+                // the channel's event loop already, which is what
+                // syncOperations requires.
+                channel.eventLoop.makeCompletedFuture {
+                    let idle = IdleStateHandler(readTimeout: .seconds(Self.readIdleSeconds))
+                    let handler = KDEConnectChannelHandler(
+                        role: .inbound,
+                        sslContext: sslContext,
+                        onIdentity: { identity, ch in onIdentity(identity, ch) },
+                        onPacket: { packet in onPacket(packet, channel) },
+                        onSecured: { onSecured(channel) },
+                        onClose: { err in onClose(channel, err) }
+                    )
+                    try channel.pipeline.syncOperations.addHandler(idle)
+                    try channel.pipeline.syncOperations.addHandler(handler)
+                }
             }
             .childChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelOption(ChannelOptions.tcpOption(.tcp_nodelay), value: 1)
+            .childChannelOption(ChannelOptions.socketOption(.so_keepalive), value: 1)
+            .childChannelOption(Self.tcpKeepaliveIdle, value: Self.keepaliveIdleSeconds)
+            .childChannelOption(Self.tcpKeepaliveInterval, value: Self.keepaliveIntervalSeconds)
+            .childChannelOption(Self.tcpKeepaliveCount, value: Self.keepaliveCount)
 
         for port in portRange {
             do {
@@ -68,20 +94,48 @@ public final class NIOTransport: @unchecked Sendable {
     ) -> EventLoopFuture<Channel> {
         let bootstrap = ClientBootstrap(group: group)
             .channelInitializer { [self] channel in
-                let handler = KDEConnectChannelHandler(
-                    role: .outbound(peerIdentity: peerIdentity),
-                    sslContext: sslContext,
-                    onIdentity: { _, _ in /* outbound knows identity already */ },
-                    onPacket: { packet in onPacket(packet, channel) },
-                    onSecured: { onSecured(channel) },
-                    onClose: { err in onClose(channel, err) }
-                )
-                return channel.pipeline.addHandler(handler)
+                channel.eventLoop.makeCompletedFuture {
+                    let idle = IdleStateHandler(readTimeout: .seconds(Self.readIdleSeconds))
+                    let handler = KDEConnectChannelHandler(
+                        role: .outbound(peerIdentity: peerIdentity),
+                        sslContext: sslContext,
+                        onIdentity: { _, _ in /* outbound knows identity already */ },
+                        onPacket: { packet in onPacket(packet, channel) },
+                        onSecured: { onSecured(channel) },
+                        onClose: { err in onClose(channel, err) }
+                    )
+                    try channel.pipeline.syncOperations.addHandler(idle)
+                    try channel.pipeline.syncOperations.addHandler(handler)
+                }
             }
             .channelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .channelOption(ChannelOptions.tcpOption(.tcp_nodelay), value: 1)
+            .channelOption(ChannelOptions.socketOption(.so_keepalive), value: 1)
+            .channelOption(Self.tcpKeepaliveIdle, value: Self.keepaliveIdleSeconds)
+            .channelOption(Self.tcpKeepaliveInterval, value: Self.keepaliveIntervalSeconds)
+            .channelOption(Self.tcpKeepaliveCount, value: Self.keepaliveCount)
             .connectTimeout(.seconds(5))
 
         return bootstrap.connect(host: host, port: Int(port))
     }
+
+    // MARK: - macOS TCP keepalive timing options
+    //
+    // NIO doesn't ship pre-baked helpers for the TCP_KEEPALIVE family because
+    // the option names differ across platforms (Linux: TCP_KEEPIDLE, Darwin:
+    // TCP_KEEPALIVE). We hard-wire the Darwin values here — the project
+    // targets macOS 13+ so cross-platform parity is not a goal.
+
+    static let tcpKeepaliveIdle: ChannelOptions.Types.SocketOption = .init(
+        level: .tcp,
+        name: NIOBSDSocket.Option(rawValue: CInt(TCP_KEEPALIVE))
+    )
+    static let tcpKeepaliveInterval: ChannelOptions.Types.SocketOption = .init(
+        level: .tcp,
+        name: NIOBSDSocket.Option(rawValue: CInt(TCP_KEEPINTVL))
+    )
+    static let tcpKeepaliveCount: ChannelOptions.Types.SocketOption = .init(
+        level: .tcp,
+        name: NIOBSDSocket.Option(rawValue: CInt(TCP_KEEPCNT))
+    )
 }
