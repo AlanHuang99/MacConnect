@@ -176,10 +176,36 @@ struct DeviceRow: View {
                         .font(.caption2).foregroundStyle(.secondary)
                 }
             }
+            fingerprintDiff
             HStack {
                 Button("Reset Trust") { DeviceManager.shared.resetTrust(device) }
                     .controlSize(.small)
                 Spacer()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var fingerprintDiff: some View {
+        let pinned = CertificateService.shared.fingerprint(forTrustedDeviceId: device.id)
+        let presented = device.presentedFingerprint
+        if pinned != nil || presented != nil {
+            VStack(alignment: .leading, spacing: 2) {
+                if let pinned {
+                    Text("Pinned").font(.caption2).foregroundStyle(.secondary)
+                    Text(pinned)
+                        .font(.system(.caption2, design: .monospaced))
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                }
+                if let presented {
+                    Text("Presented").font(.caption2).foregroundStyle(.secondary)
+                    Text(presented)
+                        .font(.system(.caption2, design: .monospaced))
+                        .foregroundStyle(.orange)
+                        .textSelection(.enabled)
+                        .lineLimit(2)
+                }
             }
         }
     }

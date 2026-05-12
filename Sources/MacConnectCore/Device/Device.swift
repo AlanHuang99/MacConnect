@@ -15,6 +15,11 @@ public final class Device: ObservableObject, Identifiable {
     /// Peer presented a cert that does not match our pinned one. Until the
     /// user resets trust, TLS handshakes with this peer will keep failing.
     @Published public var pinMismatch: Bool = false
+    /// SHA-256 of the cert the peer just presented (colon-grouped hex).
+    /// Populated when `pinMismatch` flips true so the UI can show the user
+    /// what changed — the pre-existing pinned fingerprint comes from
+    /// `CertificateService.fingerprint(forTrustedDeviceId:)`.
+    @Published public var presentedFingerprint: String?
     @Published public var lastSeen: Date = Date()
 
     public var protocolVersion: Int

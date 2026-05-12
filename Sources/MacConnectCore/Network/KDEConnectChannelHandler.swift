@@ -202,10 +202,10 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
             case .accepted, .pinnedMatch:
                 Log.pair.info("Peer cert accepted for \(deviceId, privacy: .public) (\(String(describing: result), privacy: .public))")
                 promise.succeed(.certificateVerified)
-            case .pinnedMismatch:
-                Log.pair.error("Peer cert MISMATCH for \(deviceId, privacy: .public) — refusing")
+            case .pinnedMismatch(let fingerprint):
+                Log.pair.error("Peer cert MISMATCH for \(deviceId, privacy: .public) — refusing (presented \(fingerprint, privacy: .public))")
                 Task { @MainActor in
-                    DeviceManager.shared.flagPinMismatch(deviceId: deviceId)
+                    DeviceManager.shared.flagPinMismatch(deviceId: deviceId, presentedFingerprint: fingerprint)
                 }
                 promise.succeed(.failed)
             case .missing:

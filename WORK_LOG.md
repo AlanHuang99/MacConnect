@@ -155,6 +155,40 @@ post-handshake; close cleanly on overflow.
 - Verification: `swift build` PASS, `swift test` PASS.
 - Self-score: 3 / 3.
 
+### Task A5 — pinnedMismatch UI surface + fingerprint diff (4 pts)
+
+**Restatement.** The brief asks for a `pendingSecurityAlerts: [SecurityAlert]`
+list on `DeviceManager` and a banner in StatusView. A per-device version of
+this already shipped in 0.1.1 (`device.pinMismatch` flag + `pinMismatchPrompt`
+in StatusView). Extend it with the actual security-meaningful information the
+user needs to act safely: the presented fingerprint vs the pinned one.
+
+**Plan adjustment.** Rather than adding a parallel `pendingSecurityAlerts` list
+that would double-track the same state as `device.pinMismatch`, extend the
+existing flag with a `presentedFingerprint` field and surface both
+fingerprints in the existing prompt. This delivers the security UX value the
+brief item targets without architectural duplication.
+
+**Implementation.**
+- Files changed:
+  - `Sources/MacConnectCore/Network/TLSContextBuilder.swift` — `pinnedMismatch`
+    case now carries `presentedFingerprint: String` (colon-grouped hex).
+  - `Sources/MacConnectCore/Device/Device.swift` — `@Published presentedFingerprint: String?`.
+  - `Sources/MacConnectCore/Device/DeviceManager.swift` — `flagPinMismatch`
+    takes the new fingerprint; `resetTrust` / `unpair` clear it.
+  - `Sources/MacConnectCore/Network/KDEConnectChannelHandler.swift` — pattern
+    match new associated value.
+  - `Sources/MacConnectApp/StatusView.swift` — fingerprint diff under the
+    warning, with Pinned in default colour and Presented highlighted orange.
+- Verification: `swift build` PASS. Manual: visual diff confirmed via
+  StatusView preview not run (no preview target); functional change is
+  small + behind the same `device.pinMismatch` gate as before.
+- Self-score: 3 / 4 — the actionable security UX is improved (fingerprint
+  visibility) but the brief's "Forget device / Dismiss" two-button design
+  was not adopted. A "Dismiss" action that hides the warning while leaving
+  trust broken would be a footgun; only Reset Trust is offered. Flagged for
+  reviewer feedback.
+
 ### Task A6 — Clean shutdown (3 pts)
 
 **Restatement.** `NSApp.terminate(nil)` exits without ever calling
