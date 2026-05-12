@@ -155,3 +155,17 @@ post-handshake; close cleanly on overflow.
 - Verification: `swift build` PASS, `swift test` PASS.
 - Self-score: 3 / 3.
 
+### Task A7 — Fix PayloadTransport double-fulfil race (3 pts)
+
+**Restatement.** `startSender`'s `donePromise` can be fulfilled by three
+racing sites (handler complete, handler error, 60 s timeout). NIO promises
+crash on double-fulfil. Guard each site with a once-and-only flag.
+
+**Implementation.**
+- Files changed: `Sources/MacConnectCore/Network/PayloadTransport.swift`
+- Added `NIOLockedValueBox<Bool>` guard with `trySucceed` / `tryFail`
+  helpers used by all four fulfilment sites (including the bind-failed
+  early return).
+- Verification: `swift build` PASS.
+- Self-score: 3 / 3.
+

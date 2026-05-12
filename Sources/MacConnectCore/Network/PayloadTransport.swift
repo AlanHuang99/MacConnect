@@ -1,4 +1,5 @@
 import Foundation
+import NIOConcurrencyHelpers
 import NIOCore
 import NIOPosix
 import NIOSSL
@@ -30,6 +31,26 @@ public enum PayloadTransport {
         let group = NIOTransport.shared.group
         let context = NIOTransport.shared.sslContext
         let donePromise = group.next().makePromise(of: Void.self)
+        // Guard the three potentially-racing fulfilment sites (handler
+        // complete, handler error, defensive timeout). NIO promises crash
+        // hard on double-fulfil, so the bool is the safety boundary.
+        let doneFlag = NIOLockedValueBox(false)
+        @Sendable func trySucceed() {
+            let already = doneFlag.withLockedValue { val -> Bool in
+                let was = val
+                val = true
+                return was
+            }
+            if !already { donePromise.succeed(()) }
+        }
+        @Sendable func tryFail(_ err: Error) {
+            let already = doneFlag.withLockedValue { val -> Bool in
+                let was = val
+                val = true
+                return was
+            }
+            if !already { donePromise.fail(err) }
+        }
 
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
@@ -42,11 +63,11 @@ public enum PayloadTransport {
                     fileURL: fileURL,
                     onComplete: {
                         onComplete()
-                        donePromise.succeed(())
+                        trySucceed()
                     },
                     onError: { err in
                         onError(err)
-                        donePromise.fail(err)
+                        tryFail(err)
                     }
                 )
                 do {
@@ -74,7 +95,7 @@ public enum PayloadTransport {
             let err = NSError(domain: "MacConnect.Payload", code: 1,
                               userInfo: [NSLocalizedDescriptionKey: "No free payload port"])
             onError(err)
-            donePromise.fail(err)
+            tryFail(err)
             return (0, donePromise.futureResult)
         }
 
@@ -89,7 +110,7 @@ public enum PayloadTransport {
                 serverChannel.close(promise: nil)
                 let err = NSError(domain: "MacConnect.Payload", code: 2,
                                   userInfo: [NSLocalizedDescriptionKey: "Receiver never connected"])
-                donePromise.fail(err)
+                tryFail(err)
             }
         }
 
