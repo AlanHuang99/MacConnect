@@ -112,6 +112,7 @@ struct StatusView: View {
 
 struct DeviceRow: View {
     @ObservedObject var device: Device
+    @ObservedObject private var transfers = TransferStore.shared
     @State private var isDropTarget: Bool = false
 
     var body: some View {
@@ -137,6 +138,10 @@ struct DeviceRow: View {
             } else {
                 unpairedActions
             }
+
+            ForEach(transfers.activeTransfers(forDeviceId: device.id)) { transfer in
+                transferRow(transfer)
+            }
         }
         .padding(.horizontal, 12)
         .padding(.vertical, isDropTarget ? 4 : 0)
@@ -146,6 +151,39 @@ struct DeviceRow: View {
         .onDrop(of: [.fileURL], isTargeted: device.isPaired && device.isReachable ? $isDropTarget : nil) { providers in
             handleDrop(providers: providers)
         }
+    }
+
+    private func transferRow(_ transfer: TransferStore.Transfer) -> some View {
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: 6) {
+                Image(systemName: transfer.direction == .incoming ? "arrow.down.circle" : "arrow.up.circle")
+                    .font(.caption2)
+                Text(transfer.filename)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Text(Self.formatTransferProgress(transfer))
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                    .monospacedDigit()
+            }
+            ProgressView(value: transfer.fractionComplete)
+                .progressViewStyle(.linear)
+        }
+    }
+
+    private static func formatTransferProgress(_ transfer: TransferStore.Transfer) -> String {
+        let sent = formatBytes(transfer.transferredBytes)
+        let total = formatBytes(transfer.totalBytes)
+        return "\(sent) / \(total)"
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
     }
 
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
