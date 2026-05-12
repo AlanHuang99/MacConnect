@@ -38,6 +38,16 @@ struct StatusView: View {
         }
         .frame(width: 360, height: 500)
         .animation(.easeInOut(duration: 0.12), value: showingSettings)
+        .onAppear(perform: requestNowPlayingFromPeers)
+    }
+
+    /// Ask paired-and-online peers to push their current MPRIS state so the
+    /// tile isn't blank on first popover open. Peers push subsequent updates
+    /// proactively on track / state change.
+    private func requestNowPlayingFromPeers() {
+        for device in manager.deviceList() where device.isPaired && device.isReachable {
+            MprisPlugin.requestNowPlaying(from: device)
+        }
     }
 
     private var header: some View {
@@ -113,6 +123,7 @@ struct StatusView: View {
 struct DeviceRow: View {
     @ObservedObject var device: Device
     @ObservedObject private var transfers = TransferStore.shared
+    @ObservedObject private var mpris = MprisStore.shared
     @State private var isDropTarget: Bool = false
 
     var body: some View {
@@ -139,6 +150,10 @@ struct DeviceRow: View {
                 unpairedActions
             }
 
+            if device.isPaired, device.isReachable, let mprisState = mpris.state(for: device.id) {
+                mprisTile(mprisState)
+            }
+
             ForEach(transfers.activeTransfers(forDeviceId: device.id)) { transfer in
                 transferRow(transfer)
             }
@@ -151,6 +166,38 @@ struct DeviceRow: View {
         .onDrop(of: [.fileURL], isTargeted: device.isPaired && device.isReachable ? $isDropTarget : nil) { providers in
             handleDrop(providers: providers)
         }
+    }
+
+    private func mprisTile(_ state: MprisStore.State) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            if let line = state.titleLine {
+                Text(line)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+            }
+            HStack(spacing: 4) {
+                Text(state.player)
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button { MprisPlugin.previous(device) } label: {
+                    Image(systemName: "backward.fill")
+                }
+                .disabled(!state.canGoPrevious)
+                Button { MprisPlugin.playPause(device) } label: {
+                    Image(systemName: state.isPlaying ? "pause.fill" : "play.fill")
+                }
+                Button { MprisPlugin.next(device) } label: {
+                    Image(systemName: "forward.fill")
+                }
+                .disabled(!state.canGoNext)
+            }
+            .controlSize(.small)
+            .buttonStyle(.borderless)
+        }
+        .padding(8)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func transferRow(_ transfer: TransferStore.Transfer) -> some View {
