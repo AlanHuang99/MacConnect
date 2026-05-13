@@ -346,7 +346,17 @@ struct DeviceRow: View {
         } else if let age = lastSeenAge {
             bits.append("last seen \(age)")
         }
-        if let bat = battery.state(for: device.id), device.isReachable {
+        // Battery is only meaningful when (a) we still trust the peer
+        // (otherwise we'd be displaying cached data for an unpaired
+        // device), (b) it's currently reachable (otherwise stale), and
+        // (c) the battery plugin is actually enabled for this peer — the
+        // user can disable it globally or per-device, in which case the
+        // cache may exist from before the toggle and shouldn't be shown.
+        let id = device.id
+        if device.isPaired,
+           device.isReachable,
+           MacConnectCore.Settings.shared.isPluginEnabled("battery", forDevice: id),
+           let bat = battery.state(for: id) {
             bits.append("\(bat.currentCharge)%\(bat.isCharging ? " ⚡" : "")")
         }
         return bits.joined(separator: " · ")
