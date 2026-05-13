@@ -1,5 +1,5 @@
-import Foundation
 import CryptoKit
+import Foundation
 
 /// Manages the local TLS identity (RSA-2048 self-signed certificate + private
 /// key) and the on-disk store of pinned remote-peer certs.
@@ -22,7 +22,12 @@ public final class CertificateService: @unchecked Sendable {
         if let rootDirectory {
             dir = rootDirectory
         } else {
-            let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+            let base = (try? fm.url(
+                for: .applicationSupportDirectory,
+                in: .userDomainMask,
+                appropriateFor: nil,
+                create: true
+            ))
                 ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
             dir = base.appendingPathComponent("MacConnect", isDirectory: true)
         }
@@ -50,19 +55,25 @@ public final class CertificateService: @unchecked Sendable {
             "-sha256",
             "-days", "3650",
             "-nodes",
-            "-subj", subject,
+            "-subj", subject
         ])
         Log.pair.info("Generated TLS identity for deviceId=\(deviceId, privacy: .public)")
     }
 
-    public var certificatePEMURL: URL { certURL }
-    public var privateKeyPEMURL: URL { keyURL }
+    public var certificatePEMURL: URL {
+        certURL
+    }
+
+    public var privateKeyPEMURL: URL {
+        keyURL
+    }
 
     public func ensureIdentity() throws {
         lock.lock()
         defer { lock.unlock() }
         if FileManager.default.fileExists(atPath: certURL.path),
-           FileManager.default.fileExists(atPath: keyURL.path) {
+           FileManager.default.fileExists(atPath: keyURL.path)
+        {
             return
         }
         try generateIdentity()
@@ -79,7 +90,7 @@ public final class CertificateService: @unchecked Sendable {
             "-sha256",
             "-days", "3650",
             "-nodes",
-            "-subj", subject,
+            "-subj", subject
         ])
 
         Log.pair.info("Generated TLS identity for deviceId=\(deviceId, privacy: .public)")
@@ -90,7 +101,10 @@ public final class CertificateService: @unchecked Sendable {
         do {
             try der.write(to: url)
         } catch {
-            Log.pair.error("Failed to store cert for \(deviceId, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Log.pair
+                .error(
+                    "Failed to store cert for \(deviceId, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
         }
     }
 
@@ -125,7 +139,8 @@ public final class CertificateService: @unchecked Sendable {
 
     private func localCertDER() -> Data? {
         guard let pemData = try? Data(contentsOf: certURL),
-              let pemString = String(data: pemData, encoding: .utf8) else {
+              let pemString = String(data: pemData, encoding: .utf8)
+        else {
             return nil
         }
         let base64 = pemString
@@ -141,7 +156,7 @@ public final class CertificateService: @unchecked Sendable {
         while i < hex.endIndex {
             let j = hex.index(i, offsetBy: 2, limitedBy: hex.endIndex) ?? hex.endIndex
             if !out.isEmpty { out.append(":") }
-            out.append(contentsOf: hex[i..<j])
+            out.append(contentsOf: hex[i ..< j])
             i = j
         }
         return out

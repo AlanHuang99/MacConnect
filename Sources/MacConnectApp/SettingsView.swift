@@ -1,12 +1,12 @@
-import SwiftUI
 import MacConnectCore
+import SwiftUI
 
 struct SettingsView: View {
     @Binding var isPresented: Bool
     @ObservedObject var settings: MacConnectCore.Settings = .shared
     @ObservedObject var transfers: TransferStore = .shared
+    @StateObject private var loginItem = LoginItemController()
     @State private var nameDraft: String = MacConnectCore.Settings.shared.deviceName
-    @State private var loginItemError: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -37,10 +37,13 @@ struct SettingsView: View {
                                     .textFieldStyle(.roundedBorder)
                                     .onSubmit(commitName)
                                 Button("Save", action: commitName)
-                                    .disabled(nameDraft == settings.deviceName || nameDraft.trimmingCharacters(in: .whitespaces).isEmpty)
+                                    .disabled(nameDraft == settings.deviceName || nameDraft
+                                        .trimmingCharacters(in: .whitespaces).isEmpty)
                             }
-                            Text("Shown to other devices when broadcasting. Max 32 chars; no \" ' , ; : . ! ? ( ) [ ] < >")
-                                .font(.caption2).foregroundStyle(.secondary)
+                            Text(
+                                "Shown to other devices when broadcasting. Max 32 chars; no \" ' , ; : . ! ? ( ) [ ] < >"
+                            )
+                            .font(.caption2).foregroundStyle(.secondary)
                         }
                         Divider()
                         labelValue("Device ID", settings.deviceId)
@@ -51,8 +54,23 @@ struct SettingsView: View {
                     }
 
                     section("Startup") {
-                        Toggle("Launch at login", isOn: loginItemBinding)
-                        if let err = loginItemError {
+                        HStack {
+                            Toggle("Launch at login", isOn: loginItemBinding)
+                                .disabled(loginItem.isBusy || loginItem.isTranslocated)
+                            if loginItem.isBusy {
+                                ProgressView()
+                                    .controlSize(.small)
+                                    .padding(.leading, 4)
+                            }
+                            Spacer()
+                        }
+                        if loginItem.isTranslocated {
+                            Text(
+                                "MacConnect is running from a temporary location. Move MacConnect.app into your Applications folder and relaunch to use Launch at Login."
+                            )
+                            .font(.caption2)
+                            .foregroundStyle(.orange)
+                        } else if let err = loginItem.lastError {
                             Text(err)
                                 .font(.caption2)
                                 .foregroundStyle(.red)
@@ -119,7 +137,6 @@ struct SettingsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
     }
 
-    @ViewBuilder
     private func recentTransferRow(_ transfer: TransferStore.Transfer) -> some View {
         HStack(alignment: .top, spacing: 6) {
             Image(systemName: icon(for: transfer))
@@ -130,9 +147,11 @@ struct SettingsView: View {
                     .font(.caption)
                     .lineLimit(1)
                     .truncationMode(.middle)
-                Text("\(transfer.direction == .incoming ? "From" : "To") \(transfer.deviceName) · \(Self.formatBytes(transfer.totalBytes))")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "\(transfer.direction == .incoming ? "From" : "To") \(transfer.deviceName) · \(Self.formatBytes(transfer.totalBytes))"
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
                 if case .failed(let reason) = transfer.state {
                     Text(reason)
                         .font(.caption2)
@@ -146,17 +165,17 @@ struct SettingsView: View {
 
     private func icon(for transfer: TransferStore.Transfer) -> String {
         switch transfer.state {
-        case .inProgress: return "arrow.left.arrow.right.circle"
-        case .completed:  return transfer.direction == .incoming ? "arrow.down.circle.fill" : "arrow.up.circle.fill"
-        case .failed:     return "exclamationmark.triangle.fill"
+        case .inProgress: "arrow.left.arrow.right.circle"
+        case .completed: transfer.direction == .incoming ? "arrow.down.circle.fill" : "arrow.up.circle.fill"
+        case .failed: "exclamationmark.triangle.fill"
         }
     }
 
     private func color(for transfer: TransferStore.Transfer) -> Color {
         switch transfer.state {
-        case .inProgress: return .secondary
-        case .completed:  return .accentColor
-        case .failed:     return .red
+        case .inProgress: .secondary
+        case .completed: .accentColor
+        case .failed: .red
         }
     }
 
@@ -170,11 +189,11 @@ struct SettingsView: View {
     private static var appVersion: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
     }
+
     private static var appBuild: String {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev"
     }
 
-    @ViewBuilder
     private func trustedDeviceRow(id: String) -> some View {
         VStack(alignment: .leading, spacing: 2) {
             HStack {
@@ -200,9 +219,11 @@ struct SettingsView: View {
                         .disabled(!MacConnectCore.Settings.shared.isPluginEnabled(plugin.identifier))
                         .font(.caption)
                 }
-                Text("Overrides on top of the global setting. Disabling here silently drops inbound packets from this peer for the plugin; outgoing capabilities still advertise it.")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
+                Text(
+                    "Overrides on top of the global setting. Disabling here silently drops inbound packets from this peer for the plugin; outgoing capabilities still advertise it."
+                )
+                .font(.caption2)
+                .foregroundStyle(.secondary)
             }
             .font(.caption)
         }
@@ -230,15 +251,8 @@ struct SettingsView: View {
 
     private var loginItemBinding: Binding<Bool> {
         Binding(
-            get: { LoginItem.isEnabled },
-            set: { newValue in
-                do {
-                    try LoginItem.setEnabled(newValue)
-                    loginItemError = nil
-                } catch {
-                    loginItemError = "Couldn't \(newValue ? "enable" : "disable") launch at login: \(error.localizedDescription)"
-                }
-            }
+            get: { loginItem.isEnabled },
+            set: { newValue in loginItem.setEnabled(newValue) }
         )
     }
 
@@ -250,8 +264,7 @@ struct SettingsView: View {
         LanLinkProvider.shared.refresh()
     }
 
-    @ViewBuilder
-    private func section<C: View>(_ title: String, @ViewBuilder _ content: () -> C) -> some View {
+    private func section(_ title: String, @ViewBuilder _ content: () -> some View) -> some View {
         VStack(alignment: .leading, spacing: 8) {
             Text(title).font(.subheadline.weight(.semibold))
             content()

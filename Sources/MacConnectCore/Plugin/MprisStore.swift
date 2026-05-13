@@ -1,5 +1,5 @@
-import Foundation
 import Combine
+import Foundation
 
 /// Observable now-playing state per device. `MprisPlugin` updates the
 /// store from incoming `kdeconnect.mpris` packets; the popover UI reads.
@@ -40,14 +40,14 @@ public final class MprisStore: ObservableObject {
         /// have no track info at all (e.g. peer just sent a player list).
         public var titleLine: String? {
             switch (title, artist) {
-            case let (.some(t), .some(a)) where !t.isEmpty && !a.isEmpty:
-                return "\(t) — \(a)"
-            case let (.some(t), _) where !t.isEmpty:
-                return t
-            case let (_, .some(a)) where !a.isEmpty:
-                return a
+            case (.some(let t), .some(let a)) where !t.isEmpty && !a.isEmpty:
+                "\(t) — \(a)"
+            case (.some(let t), _) where !t.isEmpty:
+                t
+            case (_, .some(let a)) where !a.isEmpty:
+                a
             default:
-                return nil
+                nil
             }
         }
     }
@@ -92,7 +92,8 @@ public final class MprisStore: ObservableObject {
         // against peers that use only the deprecated field.
         if state.title == nil, state.artist == nil,
            let nowPlaying = packet.body["nowPlaying"]?.stringValue,
-           !nowPlaying.isEmpty {
+           !nowPlaying.isEmpty
+        {
             state.title = nowPlaying
         }
         if let isPlaying = packet.body["isPlaying"]?.boolValue { state.isPlaying = isPlaying }

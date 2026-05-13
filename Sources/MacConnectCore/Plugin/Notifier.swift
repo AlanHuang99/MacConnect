@@ -12,9 +12,9 @@ public enum Notifier {
     }
 
     public static let replyCategoryIdentifier = "macconnect.notification.reply"
-    public static let replyActionIdentifier   = "macconnect.notification.reply.action"
-    public static let userInfoDeviceId        = "macconnect.deviceId"
-    public static let userInfoRequestReplyId  = "macconnect.requestReplyId"
+    public static let replyActionIdentifier = "macconnect.notification.reply.action"
+    public static let userInfoDeviceId = "macconnect.deviceId"
+    public static let userInfoRequestReplyId = "macconnect.requestReplyId"
 
     /// Register the reply category with UNUserNotificationCenter. Idempotent;
     /// safe to call multiple times from app startup.
@@ -43,7 +43,7 @@ public enum Notifier {
             content.categoryIdentifier = replyCategoryIdentifier
             content.userInfo = [
                 userInfoDeviceId: ctx.deviceId,
-                userInfoRequestReplyId: ctx.requestReplyId,
+                userInfoRequestReplyId: ctx.requestReplyId
             ]
         }
         let req = UNNotificationRequest(identifier: UUID().uuidString, content: content, trigger: nil)

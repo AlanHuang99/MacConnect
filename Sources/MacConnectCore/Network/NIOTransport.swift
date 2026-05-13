@@ -1,5 +1,5 @@
-import Foundation
 import Darwin
+import Foundation
 import NIOCore
 import NIOPosix
 import NIOSSL
@@ -34,6 +34,23 @@ public final class NIOTransport: @unchecked Sendable {
             // crashing at startup is more useful than continuing in a broken
             // state.
             fatalError("TLS context init failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Gracefully shut down the NIO event loops with a hard deadline.
+    /// Called from `applicationWillTerminate` so the process actually
+    /// exits instead of being kept alive by the event-loop threads.
+    public func shutdown(deadline: DispatchTime = .now() + 0.5) {
+        let group = DispatchGroup()
+        group.enter()
+        self.group.shutdownGracefully(queue: .global(qos: .userInitiated)) { error in
+            if let error {
+                Log.net.notice("NIO shutdown error: \(error.localizedDescription, privacy: .public)")
+            }
+            group.leave()
+        }
+        if group.wait(timeout: deadline) == .timedOut {
+            Log.net.notice("NIO shutdownGracefully timed out; exiting anyway")
         }
     }
 
@@ -122,6 +139,7 @@ public final class NIOTransport: @unchecked Sendable {
     }
 
     // MARK: - macOS TCP keepalive timing options
+
     //
     // NIO doesn't ship pre-baked helpers for the TCP_KEEPALIVE family because
     // the option names differ across platforms (Linux: TCP_KEEPIDLE, Darwin:

@@ -1,5 +1,5 @@
-import XCTest
 @testable import MacConnectCore
+import XCTest
 
 final class PacketTests: XCTestCase {
     func testIdentityRoundTrip() throws {
@@ -34,7 +34,7 @@ final class PacketTests: XCTestCase {
         XCTAssertEqual(parsed.body["message"]?.stringValue, "hi")
     }
 
-    func testPairRequest() throws {
+    func testPairRequest() {
         let p = PairPacketBuilder.request()
         XCTAssertEqual(p.type, PacketType.pair)
         XCTAssertEqual(p.body["pair"]?.boolValue, true)

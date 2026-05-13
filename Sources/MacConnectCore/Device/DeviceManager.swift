@@ -1,5 +1,5 @@
-import Foundation
 import Combine
+import Foundation
 
 @MainActor
 public final class DeviceManager: ObservableObject {

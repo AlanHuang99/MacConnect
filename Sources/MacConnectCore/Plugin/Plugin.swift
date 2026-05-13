@@ -12,6 +12,6 @@ public protocol Plugin: AnyObject, Sendable {
 }
 
 public extension Plugin {
-    @MainActor func attach(to device: Device) async {}
-    @MainActor func detach(from device: Device) async {}
+    @MainActor func attach(to _: Device) async {}
+    @MainActor func detach(from _: Device) async {}
 }

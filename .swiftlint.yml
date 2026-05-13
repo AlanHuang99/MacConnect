@@ -23,16 +23,20 @@ disabled_rules:
   - trailing_whitespace      # SwiftFormat handles whitespace canonicalisation.
   - force_cast               # Used in a few NIO socket-option call sites where the cast is safe.
   - cyclomatic_complexity    # Plugin handle() methods branch by packet field.
+  - function_parameter_count # NIO bootstrap closures bundle 5–7 callbacks (onIdentity/onPacket/onSecured/onClose); collapsing
+                             # them into a Configuration struct is a larger refactor, not a lint pass.
 
 opt_in_rules:
   - empty_count
   - explicit_init
   - first_where
   - sorted_imports
-  - unused_import
   - prefer_zero_over_explicit_init
   - redundant_nil_coalescing
 
+# unused_import is an analyzer-only rule (requires `swiftlint analyze`),
+# so it must be listed here rather than in opt_in_rules. SwiftLint warned
+# about the duplicate when it appeared in both lists.
 analyzer_rules:
   - unused_import
 

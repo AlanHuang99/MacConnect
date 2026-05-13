@@ -113,15 +113,39 @@ jobs:
           cd build
           ditto -c -k --keepParent MacConnect.app "MacConnect-${{ steps.ver.outputs.tag }}.zip"
 
-      - name: Build DMG from stapled .app
+      - name: Build polished DMG from stapled .app
         run: |
-          STAGE="$(mktemp -d)"
-          cp -R build/MacConnect.app "$STAGE/"
-          ln -s /Applications "$STAGE/Applications"
-          hdiutil create \
-            -volname "MacConnect" \
-            -srcfolder "$STAGE" \
-            -ov -format UDZO \
+          ./scripts/build-dmg.sh \
+            build/MacConnect.app \
+            "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg" \
+            "MacConnect"
+
+      - name: Codesign the DMG
+        run: |
+          KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
+          IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
+            | grep "Developer ID Application" | head -1 | awk '{print $2}')
+          codesign --force --sign "$IDENTITY" --timestamp \
+            --keychain "$KEYCHAIN_PATH" \
+            "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg"
+          codesign --verify --verbose=2 "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg"
+
+      - name: Notarize and staple the DMG
+        env:
+          KEY_BASE64: ${{ secrets.MACOS_NOTARY_API_KEY_P8_BASE64 }}
+          KEY_ID: ${{ secrets.MACOS_NOTARY_API_KEY_ID }}
+          ISSUER_ID: ${{ secrets.MACOS_NOTARY_ISSUER_ID }}
+        run: |
+          KEY_PATH="$RUNNER_TEMP/AuthKey.p8"
+          echo "$KEY_BASE64" | base64 --decode > "$KEY_PATH"
+          xcrun notarytool submit \
+            "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg" \
+            --key "$KEY_PATH" --key-id "$KEY_ID" --issuer "$ISSUER_ID" \
+            --wait
+          rm "$KEY_PATH"
+          xcrun stapler staple "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg"
+          xcrun stapler validate "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg"
+          spctl -a -t open --context context:primary-signature -vv \
             "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg"
 
       - name: Show release artifacts

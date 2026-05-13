@@ -23,14 +23,15 @@ public final class LanLink: @unchecked Sendable {
     }
 
     deinit {
-#if DEBUG
+        #if DEBUG
         Log.net.debug("LanLink deinit: \(self.deviceId, privacy: .public)")
-#endif
+        #endif
     }
 
     public var isSecure: Bool {
         get {
-            lock.lock(); defer { lock.unlock() }
+            lock.lock()
+            defer { lock.unlock() }
             return _isSecure
         }
         set {
@@ -41,7 +42,8 @@ public final class LanLink: @unchecked Sendable {
     }
 
     public var activeChannel: Channel {
-        lock.lock(); defer { lock.unlock() }
+        lock.lock()
+        defer { lock.unlock() }
         return channel
     }
 
@@ -63,7 +65,8 @@ public final class LanLink: @unchecked Sendable {
         // dispatch so they never raise a banner. We no longer emit them
         // ourselves — see `NetworkPacket.keepalive()` for history.
         if packet.type == PacketType.ping,
-           packet.body[NetworkPacket.keepaliveBodyKey]?.boolValue == true {
+           packet.body[NetworkPacket.keepaliveBodyKey]?.boolValue == true
+        {
             Log.net.debug("Received keepalive from \(self.deviceId, privacy: .public); dropping")
             return
         }
@@ -87,7 +90,10 @@ public final class LanLink: @unchecked Sendable {
         lock.unlock()
 
         guard secure else {
-            Log.net.warning("Refusing to send \(packet.type, privacy: .public) before TLS for \(self.deviceId, privacy: .public)")
+            Log.net
+                .warning(
+                    "Refusing to send \(packet.type, privacy: .public) before TLS for \(self.deviceId, privacy: .public)"
+                )
             return
         }
         do {
@@ -96,18 +102,24 @@ public final class LanLink: @unchecked Sendable {
             buf.writeBytes(data)
             let promise = ch.eventLoop.makePromise(of: Void.self)
             ch.writeAndFlush(buf, promise: promise)
-            let deviceId = self.deviceId
+            let deviceId = deviceId
             let type = packet.type
             promise.futureResult.whenComplete { result in
                 switch result {
                 case .success:
                     Log.net.debug("Sent \(type, privacy: .public) to \(deviceId, privacy: .public)")
                 case .failure(let err):
-                    Log.net.error("Write failed for \(type, privacy: .public) to \(deviceId, privacy: .public): \(err.localizedDescription, privacy: .public)")
+                    Log.net
+                        .error(
+                            "Write failed for \(type, privacy: .public) to \(deviceId, privacy: .public): \(err.localizedDescription, privacy: .public)"
+                        )
                 }
             }
         } catch {
-            Log.net.error("Serialize failed for \(packet.type, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Log.net
+                .error(
+                    "Serialize failed for \(packet.type, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
         }
     }
 }

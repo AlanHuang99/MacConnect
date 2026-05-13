@@ -26,7 +26,7 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
                     type: PacketType.mprisRequest,
                     body: [
                         "requestNowPlaying": .bool(true),
-                        "player": .string(playerName),
+                        "player": .string(playerName)
                     ]
                 ))
             }

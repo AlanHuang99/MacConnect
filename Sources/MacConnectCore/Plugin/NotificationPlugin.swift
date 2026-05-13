@@ -4,7 +4,11 @@ public final class NotificationPlugin: Plugin, @unchecked Sendable {
     public let identifier = "notification"
     public let displayName = "Notifications"
     public let incomingCapabilities = [PacketType.notification, PacketType.notificationRequest]
-    public let outgoingCapabilities = [PacketType.notificationReply, PacketType.notificationAction, PacketType.notificationRequest]
+    public let outgoingCapabilities = [
+        PacketType.notificationReply,
+        PacketType.notificationAction,
+        PacketType.notificationRequest
+    ]
 
     public init() {}
 
@@ -31,7 +35,7 @@ public final class NotificationPlugin: Plugin, @unchecked Sendable {
     public static func replyPacket(requestReplyId: String, message: String) -> NetworkPacket {
         NetworkPacket(type: PacketType.notificationReply, body: [
             "requestReplyId": .string(requestReplyId),
-            "message": .string(message),
+            "message": .string(message)
         ])
     }
 }

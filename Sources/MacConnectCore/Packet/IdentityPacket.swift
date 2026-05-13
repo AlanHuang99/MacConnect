@@ -16,7 +16,7 @@ public struct IdentityPayload: Sendable {
             "deviceType": .string(deviceType.rawValue),
             "protocolVersion": .int(Int64(protocolVersion)),
             "incomingCapabilities": .array(incomingCapabilities.map { .string($0) }),
-            "outgoingCapabilities": .array(outgoingCapabilities.map { .string($0) }),
+            "outgoingCapabilities": .array(outgoingCapabilities.map { .string($0) })
         ]
         if let port = tcpPort {
             body["tcpPort"] = .int(Int64(port))

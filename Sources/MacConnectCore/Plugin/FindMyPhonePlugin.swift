@@ -9,7 +9,7 @@ public final class FindMyPhonePlugin: Plugin, @unchecked Sendable {
     public init() {}
 
     @MainActor
-    public func handle(packet: NetworkPacket, from device: Device) async {}
+    public func handle(packet _: NetworkPacket, from _: Device) async {}
 
     @MainActor
     public static func ring(_ device: Device) {

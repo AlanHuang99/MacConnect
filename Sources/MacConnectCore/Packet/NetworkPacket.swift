@@ -24,7 +24,7 @@ public struct NetworkPacket: Sendable {
         var dict: [String: Any] = [
             "id": id,
             "type": type,
-            "body": AnyJSON.dictionary(body).rawValue,
+            "body": AnyJSON.dictionary(body).rawValue
         ]
         if let payloadSize {
             dict["payloadSize"] = payloadSize
@@ -40,7 +40,8 @@ public struct NetworkPacket: Sendable {
     public static func parse(_ data: Data) throws -> NetworkPacket {
         let obj = try JSONSerialization.jsonObject(with: data, options: [])
         guard let dict = obj as? [String: Any],
-              let type = dict["type"] as? String else {
+              let type = dict["type"] as? String
+        else {
             throw PacketError.malformed
         }
         let bodyDict: [String: Any] = (dict["body"] as? [String: Any]) ?? [:]
@@ -94,13 +95,13 @@ public enum AnyJSON: Sendable {
 
     public var rawValue: Any {
         switch self {
-        case .string(let v): return v
-        case .int(let v): return v
-        case .double(let v): return v
-        case .bool(let v): return v
-        case .array(let v): return v.map(\.rawValue)
-        case .dictionary(let v): return v.mapValues(\.rawValue)
-        case .null: return NSNull()
+        case .string(let v): v
+        case .int(let v): v
+        case .double(let v): v
+        case .bool(let v): v
+        case .array(let v): v.map(\.rawValue)
+        case .dictionary(let v): v.mapValues(\.rawValue)
+        case .null: NSNull()
         }
     }
 
@@ -123,21 +124,25 @@ public enum AnyJSON: Sendable {
         if case .string(let v) = self { return v }
         return nil
     }
+
     public var intValue: Int64? {
         switch self {
-        case .int(let v): return v
-        case .double(let v): return Int64(v)
-        default: return nil
+        case .int(let v): v
+        case .double(let v): Int64(v)
+        default: nil
         }
     }
+
     public var boolValue: Bool? {
         if case .bool(let v) = self { return v }
         return nil
     }
+
     public var arrayValue: [AnyJSON]? {
         if case .array(let v) = self { return v }
         return nil
     }
+
     public var dictValue: [String: AnyJSON]? {
         if case .dictionary(let v) = self { return v }
         return nil

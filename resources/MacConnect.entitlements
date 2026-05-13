@@ -2,5 +2,15 @@
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
+    <!--
+        Outbound + inbound TCP/UDP are required for the KDE Connect LAN
+        protocol. Sandboxed clients would need these; Hardened Runtime
+        does not require them, but declaring them is harmless and makes
+        the intent obvious to reviewers.
+    -->
+    <key>com.apple.security.network.client</key>
+    <true/>
+    <key>com.apple.security.network.server</key>
+    <true/>
 </dict>
 </plist>

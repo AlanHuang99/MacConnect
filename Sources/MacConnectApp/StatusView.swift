@@ -1,6 +1,6 @@
+import MacConnectCore
 import SwiftUI
 import UniformTypeIdentifiers
-import MacConnectCore
 
 struct StatusView: View {
     @ObservedObject var manager = DeviceManager.shared
@@ -341,11 +341,11 @@ struct DeviceRow: View {
 
     private var deviceSymbol: String {
         switch device.type {
-        case .phone: return "iphone"
-        case .tablet: return "ipad"
-        case .laptop: return "laptopcomputer"
-        case .desktop: return "desktopcomputer"
-        case .tv: return "tv"
+        case .phone: "iphone"
+        case .tablet: "ipad"
+        case .laptop: "laptopcomputer"
+        case .desktop: "desktopcomputer"
+        case .tv: "tv"
         }
     }
 
@@ -368,7 +368,8 @@ struct DeviceRow: View {
         if device.isPaired,
            device.isReachable,
            MacConnectCore.Settings.shared.isPluginEnabled("battery", forDevice: id),
-           let bat = battery.state(for: id) {
+           let bat = battery.state(for: id)
+        {
             bits.append("\(bat.currentCharge)%\(bat.isCharging ? " ⚡" : "")")
         }
         return bits.joined(separator: " · ")
@@ -431,8 +432,10 @@ struct DeviceRow: View {
                 VStack(alignment: .leading, spacing: 2) {
                     Text("Certificate changed")
                         .font(.caption.weight(.semibold))
-                    Text("This device's identity does not match the one we pinned. If you trust it (e.g. the app was reinstalled), reset trust and re-pair.")
-                        .font(.caption2).foregroundStyle(.secondary)
+                    Text(
+                        "This device's identity does not match the one we pinned. If you trust it (e.g. the app was reinstalled), reset trust and re-pair."
+                    )
+                    .font(.caption2).foregroundStyle(.secondary)
                 }
             }
             fingerprintDiff

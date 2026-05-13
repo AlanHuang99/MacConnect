@@ -1,5 +1,5 @@
-import Foundation
 import AppKit
+import Foundation
 
 public final class SharePlugin: Plugin, @unchecked Sendable {
     public let identifier = "share"
@@ -34,7 +34,8 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
         guard let filename = packet.body["filename"]?.stringValue,
               let payloadSize = packet.payloadSize,
               let info = packet.payloadTransferInfo,
-              let port = info["port"]?.intValue else {
+              let port = info["port"]?.intValue
+        else {
             Log.plugin.notice("Share request without payload info; ignoring")
             return
         }
@@ -45,11 +46,19 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
         }
 
         let safeName = SharePlugin.sanitizeFilename(filename)
-        let downloads = (try? FileManager.default.url(for: .downloadsDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+        let downloads = (try? FileManager.default.url(
+            for: .downloadsDirectory,
+            in: .userDomainMask,
+            appropriateFor: nil,
+            create: true
+        ))
             ?? URL(fileURLWithPath: NSHomeDirectory()).appendingPathComponent("Downloads")
         let target = SharePlugin.uniqueDestination(in: downloads, named: safeName)
 
-        Log.plugin.info("Receiving file '\(safeName, privacy: .public)' (\(payloadSize, privacy: .public) bytes) from \(device.name, privacy: .public) via port \(port, privacy: .public)")
+        Log.plugin
+            .info(
+                "Receiving file '\(safeName, privacy: .public)' (\(payloadSize, privacy: .public) bytes) from \(device.name, privacy: .public) via port \(port, privacy: .public)"
+            )
 
         let deviceName = device.name
         let deviceId = device.id
@@ -157,7 +166,7 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             "filename": .string(filename),
             "lastModified": .int(lastModified),
             "numberOfFiles": .int(1),
-            "totalPayloadSize": .int(size),
+            "totalPayloadSize": .int(size)
         ]
         var packet = NetworkPacket(type: PacketType.shareRequest, body: body)
         packet.payloadSize = size
@@ -169,7 +178,7 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
 
     static func peerHost(for device: Device) -> String? {
         // Pull the active channel's remote address from LanLinkProvider.
-        return LanLinkProvider.shared.peerHost(for: device.id)
+        LanLinkProvider.shared.peerHost(for: device.id)
     }
 
     static func sanitizeFilename(_ name: String) -> String {

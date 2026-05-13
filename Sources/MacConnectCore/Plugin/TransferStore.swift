@@ -1,5 +1,5 @@
-import Foundation
 import Combine
+import Foundation
 
 /// Observable record of in-flight and recently-completed file transfers.
 /// `SharePlugin` pushes lifecycle events here; the UI reads.
@@ -49,7 +49,7 @@ public final class TransferStore: ObservableObject {
     private let userDefaultsKey = "macconnect.recentTransfers"
 
     public init() {
-        recent = Self.loadRecent(forKey: userDefaultsKey)
+        self.recent = Self.loadRecent(forKey: userDefaultsKey)
     }
 
     public func begin(
@@ -110,7 +110,8 @@ public final class TransferStore: ObservableObject {
 
     private static func loadRecent(forKey key: String) -> [Transfer] {
         guard let data = UserDefaults.standard.data(forKey: key),
-              let payload = try? JSONDecoder().decode([PersistedTransfer].self, from: data) else {
+              let payload = try? JSONDecoder().decode([PersistedTransfer].self, from: data)
+        else {
             return []
         }
         return payload.map(\.toTransfer)
@@ -127,7 +128,7 @@ private struct PersistedTransfer: Codable {
     let direction: TransferStore.Direction
     let totalBytes: Int64
     let transferredBytes: Int64
-    let stateKind: String      // "completed" / "failed"
+    let stateKind: String // "completed" / "failed"
     let errorMessage: String?
     let startedAt: Date
     let endedAt: Date?
@@ -159,11 +160,10 @@ private struct PersistedTransfer: Codable {
     }
 
     var toTransfer: TransferStore.Transfer {
-        let state: TransferStore.State
-        switch stateKind {
-        case "completed": state = .completed
-        case "failed":    state = .failed(errorMessage ?? "Unknown error")
-        default:          state = .failed("Unknown state")
+        let state: TransferStore.State = switch stateKind {
+        case "completed": .completed
+        case "failed": .failed(errorMessage ?? "Unknown error")
+        default: .failed("Unknown state")
         }
         return .init(
             id: id,

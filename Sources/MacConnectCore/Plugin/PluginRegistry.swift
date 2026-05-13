@@ -38,7 +38,9 @@ public final class PluginRegistry: @unchecked Sendable {
     /// (the Settings toggle list); dispatch and capability advertisement
     /// should both go through `enabledPlugins` so disabled plugins are
     /// invisible to peers.
-    public var allPlugins: [Plugin] { plugins }
+    public var allPlugins: [Plugin] {
+        plugins
+    }
 
     public var enabledPlugins: [Plugin] {
         plugins.filter { Settings.shared.isPluginEnabled($0.identifier) }

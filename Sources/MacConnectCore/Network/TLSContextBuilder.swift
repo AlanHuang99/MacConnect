@@ -28,13 +28,16 @@ public enum TLSContextBuilder {
     /// Custom verification callback bound to a known peer deviceId. Used for
     /// payload sub-connections where we already know who the peer must be.
     public static func verifier(forKnownDeviceId deviceId: String) -> NIOSSLCustomVerificationCallback {
-        return { peerCerts, promise in
+        { peerCerts, promise in
             let result = PeerVerifier.verify(deviceId: deviceId, peerCerts: peerCerts)
             switch result {
             case .accepted, .pinnedMatch:
                 promise.succeed(.certificateVerified)
             case .pinnedMismatch, .missing:
-                Log.pair.error("Payload TLS verify failed for \(deviceId, privacy: .public): \(String(describing: result), privacy: .public)")
+                Log.pair
+                    .error(
+                        "Payload TLS verify failed for \(deviceId, privacy: .public): \(String(describing: result), privacy: .public)"
+                    )
                 promise.succeed(.failed)
             }
         }
@@ -43,13 +46,13 @@ public enum TLSContextBuilder {
 
 /// Result of a peer-cert verification attempt.
 public enum PeerVerification: Equatable {
-    case accepted          // first pairing — TOFU
-    case pinnedMatch       // already paired and cert matches stored pin
+    case accepted // first pairing — TOFU
+    case pinnedMatch // already paired and cert matches stored pin
     /// Already paired but cert changed — refuse. The associated value is the
     /// colon-grouped SHA-256 of the cert the peer just presented, so the UI
     /// can show the user what changed.
     case pinnedMismatch(presentedFingerprint: String)
-    case missing           // peer presented no cert
+    case missing // peer presented no cert
 }
 
 public enum PeerVerifier {
@@ -59,9 +62,12 @@ public enum PeerVerifier {
         guard let leaf = peerCerts.first else { return .missing }
         let der: Data
         do {
-            der = Data(try leaf.toDERBytes())
+            der = try Data(leaf.toDERBytes())
         } catch {
-            Log.pair.error("toDERBytes failed for \(deviceId, privacy: .public): \(error.localizedDescription, privacy: .public)")
+            Log.pair
+                .error(
+                    "toDERBytes failed for \(deviceId, privacy: .public): \(error.localizedDescription, privacy: .public)"
+                )
             return .missing
         }
         let isTrusted = Settings.shared.isTrusted(deviceId)
@@ -86,7 +92,7 @@ public enum PeerVerifier {
         while i < hex.endIndex {
             let j = hex.index(i, offsetBy: 2, limitedBy: hex.endIndex) ?? hex.endIndex
             if !out.isEmpty { out.append(":") }
-            out.append(contentsOf: hex[i..<j])
+            out.append(contentsOf: hex[i ..< j])
             i = j
         }
         return out

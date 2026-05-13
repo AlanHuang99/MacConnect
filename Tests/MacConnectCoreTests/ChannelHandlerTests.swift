@@ -1,8 +1,8 @@
-import XCTest
+@testable import MacConnectCore
 import NIOCore
 import NIOEmbedded
 import NIOSSL
-@testable import MacConnectCore
+import XCTest
 
 /// EmbeddedChannel tests for `KDEConnectChannelHandler`'s pre-TLS state
 /// machine. These do not drive the TLS handshake itself (that would require
@@ -14,7 +14,8 @@ final class ChannelHandlerTests: XCTestCase {
 
     override func setUpWithError() throws {
         try super.setUpWithError()
-        tempDir = FileManager.default.temporaryDirectory.appendingPathComponent("macconnect-handler-\(UUID().uuidString)")
+        tempDir = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macconnect-handler-\(UUID().uuidString)")
         try FileManager.default.createDirectory(at: tempDir, withIntermediateDirectories: true)
         let service = CertificateService(rootDirectory: tempDir)
         try service.generateIdentity(forDeviceId: "test_handler")
@@ -48,7 +49,7 @@ final class ChannelHandlerTests: XCTestCase {
             sslContext: sslContext,
             onIdentity: { id, _ in received.value = id },
             onPacket: { _ in },
-            onSecured: { },
+            onSecured: {},
             onClose: { _ in }
         )
         let channel = EmbeddedChannel(handler: handler)
@@ -82,7 +83,7 @@ final class ChannelHandlerTests: XCTestCase {
             sslContext: sslContext,
             onIdentity: { _, _ in },
             onPacket: { _ in },
-            onSecured: { },
+            onSecured: {},
             onClose: { _ in }
         )
         let channel = EmbeddedChannel(handler: handler)
