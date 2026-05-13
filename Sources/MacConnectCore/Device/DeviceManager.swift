@@ -60,6 +60,7 @@ public final class DeviceManager: ObservableObject {
         CertificateService.shared.deleteRemoteCert(deviceId: device.id)
         device.isPaired = false
         device.pinMismatch = false
+        device.presentedFingerprint = nil
         device.send(PairPacketBuilder.response(accept: false))
         objectWillChange.send()
     }
@@ -67,10 +68,13 @@ public final class DeviceManager: ObservableObject {
     /// Called from the TLS verifier when a paired peer presents a cert that
     /// no longer matches our stored pin. We surface this in the UI so the
     /// user can choose to reset trust (cleanly re-TOFU) rather than the link
-    /// silently failing forever.
-    public func flagPinMismatch(deviceId: String) {
+    /// silently failing forever. `presentedFingerprint` is the colon-grouped
+    /// SHA-256 of the cert the peer just offered — shown alongside the old
+    /// pin so the user can compare visually.
+    public func flagPinMismatch(deviceId: String, presentedFingerprint: String?) {
         guard let device = devices[deviceId] else { return }
         device.pinMismatch = true
+        device.presentedFingerprint = presentedFingerprint
         objectWillChange.send()
     }
 
@@ -83,6 +87,7 @@ public final class DeviceManager: ObservableObject {
         CertificateService.shared.deleteRemoteCert(deviceId: device.id)
         device.isPaired = false
         device.pinMismatch = false
+        device.presentedFingerprint = nil
         objectWillChange.send()
     }
 

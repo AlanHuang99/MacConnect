@@ -4,11 +4,18 @@ import NIOCore
 public final class LanLink: @unchecked Sendable {
     public let deviceId: String
 
+    /// How often to send `_keepalive` pings on a secured link. Short enough to
+    /// keep typical Wi-Fi NAT mappings warm; long enough not to dominate the
+    /// link's traffic.
+    public static let heartbeatInterval: TimeAmount = .seconds(30)
+
     private let lock = NSLock()
     private var _isSecure: Bool = false
     private var channel: Channel
     private let onPacketCallback: @Sendable (NetworkPacket) -> Void
     private let onCloseCallback: @Sendable () -> Void
+    private var heartbeatTask: RepeatedTask?
+    private var lastPacketReceivedTime: Date = Date()
 
     public init(
         deviceId: String,
@@ -22,20 +29,43 @@ public final class LanLink: @unchecked Sendable {
         self.onCloseCallback = onClose
     }
 
+    deinit {
+        // Belt-and-braces: tasks are also cancelled in notifyClosed, but if a
+        // link is dropped without that path running (e.g. test teardown) the
+        // scheduled task would keep firing on the event loop.
+        heartbeatTask?.cancel()
+#if DEBUG
+        Log.net.debug("LanLink deinit: \(self.deviceId, privacy: .public)")
+#endif
+    }
+
     public var isSecure: Bool {
         get {
             lock.lock(); defer { lock.unlock() }
             return _isSecure
         }
         set {
-            lock.lock(); defer { lock.unlock() }
+            let wasSecure: Bool
+            lock.lock()
+            wasSecure = _isSecure
             _isSecure = newValue
+            lock.unlock()
+            if newValue, !wasSecure {
+                startHeartbeat()
+            }
         }
     }
 
     public var activeChannel: Channel {
         lock.lock(); defer { lock.unlock() }
         return channel
+    }
+
+    /// Most recent moment we observed an inbound packet (any kind) on this
+    /// link. Used by the heartbeat as an application-layer liveness check.
+    public var lastPacketReceived: Date {
+        lock.lock(); defer { lock.unlock() }
+        return lastPacketReceivedTime
     }
 
     /// Replace the active channel with a newer secured connection. The old
@@ -51,15 +81,55 @@ public final class LanLink: @unchecked Sendable {
     }
 
     public func deliverPacket(_ packet: NetworkPacket) {
+        lock.lock()
+        lastPacketReceivedTime = Date()
+        lock.unlock()
+        // Drop heartbeat pings before user-visible plugin dispatch — they
+        // exist solely to keep the link warm. The peer might send them with
+        // an absent message body too; either way they're not for the UI.
+        if packet.type == PacketType.ping,
+           packet.body[NetworkPacket.keepaliveBodyKey]?.boolValue == true {
+            Log.net.debug("Received keepalive from \(self.deviceId, privacy: .public)")
+            return
+        }
         onPacketCallback(packet)
     }
 
     public func notifyClosed() {
+        lock.lock()
+        let task = heartbeatTask
+        heartbeatTask = nil
+        lock.unlock()
+        task?.cancel()
         onCloseCallback()
     }
 
     public func disconnect() {
         activeChannel.close(promise: nil)
+    }
+
+    // MARK: - Heartbeat
+
+    private func startHeartbeat() {
+        let channel = activeChannel
+        // Bind to a let so the closure doesn't capture self.
+        let deviceId = self.deviceId
+        let task = channel.eventLoop.scheduleRepeatedTask(
+            initialDelay: Self.heartbeatInterval,
+            delay: Self.heartbeatInterval
+        ) { [weak self] task in
+            guard let self else { task.cancel(); return }
+            guard self.isSecure, self.activeChannel.isActive else {
+                task.cancel()
+                return
+            }
+            Log.net.debug("Sending keepalive to \(deviceId, privacy: .public)")
+            self.send(NetworkPacket.keepalive())
+        }
+        lock.lock()
+        heartbeatTask?.cancel()
+        heartbeatTask = task
+        lock.unlock()
     }
 
     public func send(_ packet: NetworkPacket) {

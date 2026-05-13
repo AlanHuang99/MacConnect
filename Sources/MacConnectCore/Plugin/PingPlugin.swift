@@ -11,6 +11,12 @@ public final class PingPlugin: Plugin, @unchecked Sendable {
 
     @MainActor
     public func handle(packet: NetworkPacket, from device: Device) async {
+        // Defence in depth — LanLink already filters these before plugin
+        // dispatch, but a packet that bypasses that path (e.g. arriving via
+        // a future replay/test harness) must never raise a banner.
+        if packet.body[NetworkPacket.keepaliveBodyKey]?.boolValue == true {
+            return
+        }
         let message = packet.body["message"]?.stringValue ?? "Ping!"
         let name = device.name
         Log.plugin.info("Ping from \(name, privacy: .public): \(message, privacy: .public)")

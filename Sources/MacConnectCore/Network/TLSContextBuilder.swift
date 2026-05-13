@@ -42,10 +42,13 @@ public enum TLSContextBuilder {
 }
 
 /// Result of a peer-cert verification attempt.
-public enum PeerVerification {
+public enum PeerVerification: Equatable {
     case accepted          // first pairing — TOFU
     case pinnedMatch       // already paired and cert matches stored pin
-    case pinnedMismatch    // already paired but cert changed — refuse
+    /// Already paired but cert changed — refuse. The associated value is the
+    /// colon-grouped SHA-256 of the cert the peer just presented, so the UI
+    /// can show the user what changed.
+    case pinnedMismatch(presentedFingerprint: String)
     case missing           // peer presented no cert
 }
 
@@ -68,10 +71,24 @@ public enum PeerVerifier {
                 CertificateService.shared.storeRemoteCertDER(deviceId: deviceId, der: der)
                 return .pinnedMatch
             }
-            return pinned == der ? .pinnedMatch : .pinnedMismatch
+            if pinned == der { return .pinnedMatch }
+            let hex = CertificateService.shared.sha256Fingerprint(ofDER: der)
+            return .pinnedMismatch(presentedFingerprint: Self.colonGrouped(hex))
         }
         // Not yet paired: TOFU — store as pending pin so pair-accept can promote it.
         CertificateService.shared.storeRemoteCertDER(deviceId: deviceId, der: der)
         return .accepted
+    }
+
+    private static func colonGrouped(_ hex: String) -> String {
+        var out = ""
+        var i = hex.startIndex
+        while i < hex.endIndex {
+            let j = hex.index(i, offsetBy: 2, limitedBy: hex.endIndex) ?? hex.endIndex
+            if !out.isEmpty { out.append(":") }
+            out.append(contentsOf: hex[i..<j])
+            i = j
+        }
+        return out
     }
 }

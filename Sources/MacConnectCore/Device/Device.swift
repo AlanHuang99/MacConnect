@@ -15,13 +15,24 @@ public final class Device: ObservableObject, Identifiable {
     /// Peer presented a cert that does not match our pinned one. Until the
     /// user resets trust, TLS handshakes with this peer will keep failing.
     @Published public var pinMismatch: Bool = false
+    /// SHA-256 of the cert the peer just presented (colon-grouped hex).
+    /// Populated when `pinMismatch` flips true so the UI can show the user
+    /// what changed — the pre-existing pinned fingerprint comes from
+    /// `CertificateService.fingerprint(forTrustedDeviceId:)`.
+    @Published public var presentedFingerprint: String?
     @Published public var lastSeen: Date = Date()
 
     public var protocolVersion: Int
     public var incomingCapabilities: [String]
     public var outgoingCapabilities: [String]
 
-    weak var link: LanLink?
+    /// Strong reference to the active link for this device. `LanLinkProvider`
+    /// also holds the link by deviceId; both owners drop their references
+    /// together when `DeviceManager.detach` runs on a `handleClosed`
+    /// notification. A previous `weak` here meant the link could go nil
+    /// between provider-cleanup and device-row read, surfacing as
+    /// "device shows online but sends do nothing".
+    var link: LanLink?
 
     public init(identity: IdentityPayload, paired: Bool) {
         self.id = identity.deviceId

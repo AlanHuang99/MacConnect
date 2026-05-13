@@ -16,11 +16,16 @@ public final class CertificateService: @unchecked Sendable {
     private let certURL: URL
     private let trustedDir: URL
 
-    public init() {
+    public init(rootDirectory: URL? = nil) {
         let fm = FileManager.default
-        let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
-            ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
-        let dir = base.appendingPathComponent("MacConnect", isDirectory: true)
+        let dir: URL
+        if let rootDirectory {
+            dir = rootDirectory
+        } else {
+            let base = (try? fm.url(for: .applicationSupportDirectory, in: .userDomainMask, appropriateFor: nil, create: true))
+                ?? fm.homeDirectoryForCurrentUser.appendingPathComponent("Library/Application Support")
+            dir = base.appendingPathComponent("MacConnect", isDirectory: true)
+        }
         try? fm.createDirectory(at: dir, withIntermediateDirectories: true)
         let trusted = dir.appendingPathComponent("trusted-certs", isDirectory: true)
         try? fm.createDirectory(at: trusted, withIntermediateDirectories: true)
@@ -28,6 +33,26 @@ public final class CertificateService: @unchecked Sendable {
         self.keyURL = dir.appendingPathComponent("key.pem")
         self.certURL = dir.appendingPathComponent("cert.pem")
         self.trustedDir = trusted
+    }
+
+    /// Generate identity for a CertificateService instance constructed with a
+    /// custom directory. Test-only entry point; the production
+    /// `ensureIdentity()` uses `Settings.shared.deviceId` for the subject,
+    /// which is fine because there is only one shared instance.
+    public func generateIdentity(forDeviceId deviceId: String) throws {
+        lock.lock()
+        defer { lock.unlock() }
+        let subject = "/O=KDE/OU=KDE Connect/CN=\(deviceId)"
+        try runProcess("/usr/bin/openssl", [
+            "req", "-x509", "-newkey", "rsa:2048",
+            "-keyout", keyURL.path,
+            "-out", certURL.path,
+            "-sha256",
+            "-days", "3650",
+            "-nodes",
+            "-subj", subject,
+        ])
+        Log.pair.info("Generated TLS identity for deviceId=\(deviceId, privacy: .public)")
     }
 
     public var certificatePEMURL: URL { certURL }

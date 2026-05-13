@@ -64,6 +64,25 @@ public enum PacketError: Error {
     case malformed
 }
 
+public extension NetworkPacket {
+    /// Body key used to mark a `kdeconnect.ping` as a link-keepalive rather
+    /// than a user-facing ping. Receivers MUST suppress the notification UI
+    /// for pings carrying this flag.
+    static let keepaliveBodyKey = "_keepalive"
+
+    /// A ping packet flagged as a keepalive. Peers that don't recognise the
+    /// flag will see it as an ordinary ping with no message; KDE Connect
+    /// Android currently does this, which is harmless. Future versions of
+    /// MacConnect (and KDE Connect Linux's pending heartbeat work) honour
+    /// the flag.
+    static func keepalive() -> NetworkPacket {
+        NetworkPacket(
+            type: PacketType.ping,
+            body: [keepaliveBodyKey: .bool(true)]
+        )
+    }
+}
+
 public enum AnyJSON: Sendable {
     case string(String)
     case int(Int64)
