@@ -1,0 +1,22 @@
+# SwiftFormat configuration for MacConnect.
+#
+# Bonus-2 baseline. The codebase's existing style is the target — these
+# settings track what's already in tree so swiftformat --lint can run in
+# CI without rewriting everything.
+
+--indent 4
+--swiftversion 5.9
+--tabwidth 4
+--maxwidth 120
+--wraparguments preserve
+--wrapparameters preserve
+--wrapcollections preserve
+--commas inline
+--trimwhitespace always
+--ifdef no-indent
+--self remove
+--patternlet inline
+--linebreaks lf
+--semicolons never
+--header strip
+--exclude .build,build

@@ -1,0 +1,43 @@
+# SwiftLint configuration for MacConnect.
+#
+# Bonus-2 baseline. Style rules track what the codebase already does;
+# disabling rather than rewriting noisy defaults so the lint check stays
+# actionable rather than turning into a sea of yellow on every CI run.
+
+included:
+  - Sources
+  - Tests
+
+excluded:
+  - .build
+  - build
+
+disabled_rules:
+  - line_length              # Comments on long URLs and packet descriptions hit this.
+  - identifier_name          # Many one-letter NIO/Swift idioms (i, j, fd, ok).
+  - todo                     # We use TODO comments deliberately at follow-up points.
+  - file_length              # StatusView is intentionally a single popover surface.
+  - function_body_length     # SwiftUI body builders can be long without being complex.
+  - type_body_length         # Same reason.
+  - opening_brace            # Conflicts with SwiftFormat output.
+  - trailing_whitespace      # SwiftFormat handles whitespace canonicalisation.
+  - force_cast               # Used in a few NIO socket-option call sites where the cast is safe.
+  - cyclomatic_complexity    # Plugin handle() methods branch by packet field.
+
+opt_in_rules:
+  - empty_count
+  - explicit_init
+  - first_where
+  - sorted_imports
+  - unused_import
+  - prefer_zero_over_explicit_init
+  - redundant_nil_coalescing
+
+analyzer_rules:
+  - unused_import
+
+# Allow body lengths typical of SwiftUI views and NIO bootstraps.
+type_name:
+  min_length: 2
+  max_length:
+    warning: 60
