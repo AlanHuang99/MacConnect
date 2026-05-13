@@ -30,6 +30,9 @@ let package = Package(
             name: "MacConnectApp",
             dependencies: ["MacConnectCore"],
             path: "Sources/MacConnectApp",
+            resources: [
+                .process("Resources"),
+            ],
             swiftSettings: [
                 .enableUpcomingFeature("StrictConcurrency"),
             ]

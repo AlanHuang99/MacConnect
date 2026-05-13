@@ -47,6 +47,14 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$RES"
 cp "$BIN_PATH" "$MACOS/MacConnect"
 
+# SwiftPM generates one bundle per target with declared resources. The
+# MacConnectApp target's bundle holds Localizable.xcstrings; copy it
+# inside the .app so Bundle.module lookups work at runtime.
+SPM_BUNDLE="$BIN_DIR/MacConnect_MacConnectApp.bundle"
+if [[ -d "$SPM_BUNDLE" ]]; then
+  cp -R "$SPM_BUNDLE" "$RES/"
+fi
+
 ICON_SRC="$ROOT/resources/AppIcon.icns"
 if [[ ! -f "$ICON_SRC" ]]; then
   echo ">> Icon not found; generating via scripts/make-icon.swift"

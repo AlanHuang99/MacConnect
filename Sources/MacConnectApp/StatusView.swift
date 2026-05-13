@@ -64,7 +64,7 @@ struct StatusView: View {
     private var header: some View {
         HStack {
             Image(systemName: "iphone.radiowaves.left.and.right")
-            Text("MacConnect").font(.headline)
+            Text("MacConnect", bundle: .module).font(.headline)
             Spacer()
             Button {
                 LanLinkProvider.shared.refresh()
@@ -92,7 +92,7 @@ struct StatusView: View {
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 40))
                 .foregroundStyle(.secondary)
-            Text("Searching for devices…")
+            Text("Searching for devices…", bundle: .module)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 4) {
                 checklistItem("KDE Connect is running on the other device")
