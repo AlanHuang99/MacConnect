@@ -301,6 +301,14 @@ struct DeviceRow: View {
             // would be true but no transfer would ever start.
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
+                // Directories arrive as fileURL payloads but
+                // PayloadSenderHandler opens with FileHandle(forReadingFrom:)
+                // which fails on directories — silently turning an accepted
+                // drop into a failed transfer. Skip directories so the user
+                // sees a no-op rather than a failure notification.
+                var isDir: ObjCBool = false
+                guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
+                      !isDir.boolValue else { return }
                 Task { @MainActor in
                     SharePlugin.sendFile(url, to: device)
                 }

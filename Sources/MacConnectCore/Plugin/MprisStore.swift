@@ -62,16 +62,24 @@ public final class MprisStore: ObservableObject {
             // ping that confirms the plugin is wired without changing state.
             return
         }
-        // When the peer switches to a different player (e.g. closed
-        // Spotify, opened VLC), KDE Connect can send subsequent updates
-        // that omit fields the new player doesn't yet have. Without
-        // resetting metadata we'd render the previous player's title on
-        // top of the new player's controls. Drop the stale fields when
-        // the player identity changes; only the per-field if-let updates
-        // below restore them when the packet actually carries the data.
+        let incomingIsPlaying = packet.body["isPlaying"]?.boolValue ?? false
+
+        // Multi-player peers (e.g. Spotify + VLC both open on the phone)
+        // respond to our fan-out requestNowPlaying with one packet per
+        // player. Responses race; without protection, an inactive
+        // player's response can overwrite a currently-playing one and
+        // leave the tile + control buttons targeting the wrong player.
+        // Prefer the playing player: a non-playing packet for a
+        // different player than the one we have cached is ignored.
         var state: State
-        if let existing = states[deviceId], existing.player == player {
-            state = existing
+        if let existing = states[deviceId] {
+            if existing.player == player {
+                state = existing
+            } else if existing.isPlaying, !incomingIsPlaying {
+                return
+            } else {
+                state = State(player: player)
+            }
         } else {
             state = State(player: player)
         }
