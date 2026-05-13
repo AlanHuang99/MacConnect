@@ -243,6 +243,7 @@ struct DeviceRow: View {
                 Button { MprisPlugin.playPause(device) } label: {
                     Image(systemName: state.isPlaying ? "pause.fill" : "play.fill")
                 }
+                .disabled(state.isPlaying ? !state.canPause : !state.canPlay)
                 Button { MprisPlugin.next(device) } label: {
                     Image(systemName: "forward.fill")
                 }

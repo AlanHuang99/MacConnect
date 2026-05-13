@@ -104,7 +104,7 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             direction: .outgoing,
             totalBytes: size
         )
-        let (port, _) = PayloadTransport.startSender(
+        let (port, finished) = PayloadTransport.startSender(
             fileURL: url,
             peerDeviceId: device.id,
             onProgress: { bytes in
@@ -127,6 +127,17 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
                 }
             }
         )
+        // Receiver-never-connected timeout fails `finished` directly without
+        // firing the handler's onError, which would otherwise be the only
+        // path to TransferStore.complete. Observe the future so the UI never
+        // gets stuck on an in-flight transfer that already died upstream.
+        finished.whenFailure { err in
+            Task { @MainActor in
+                guard TransferStore.shared.active.contains(where: { $0.id == transferId }) else { return }
+                TransferStore.shared.complete(id: transferId, success: false, error: err.localizedDescription)
+                await Notifier.show(title: "Send failed", body: "\(filename): \(err.localizedDescription)")
+            }
+        }
         guard port != 0 else {
             // Listener bind failed — TransferStore already marked failed via onError above.
             return
