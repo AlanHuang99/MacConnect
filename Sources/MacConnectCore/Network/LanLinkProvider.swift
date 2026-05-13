@@ -66,16 +66,28 @@ public final class LanLinkProvider: @unchecked Sendable {
         mdnsBrowser?.cancel()
         mdnsBrowser = nil
 
-        // Take a snapshot under the lock then close outside it; the
-        // close-future callbacks (notifyClosed → DeviceManager.detach) hop
-        // back to the main actor and would deadlock if held under linkLock.
+        // Snapshot active links under the lock then close OUTSIDE it. We
+        // intentionally do NOT clear the maps yet: closing a channel fires
+        // `handleClosed` on the event loop, which needs the maps populated
+        // so it can resolve the deviceId and invoke `link.notifyClosed()`.
+        // notifyClosed cancels the heartbeat task and runs the
+        // DeviceManager.detach hop to the main actor — skipping it leaks
+        // the heartbeat timer and leaves the device row stuck "online".
         linkLock.lock()
         let activeLinks = Array(linksByDeviceId.values)
-        linksByDeviceId.removeAll()
-        channelToDeviceId.removeAll()
         linkLock.unlock()
         for link in activeLinks {
             try? link.activeChannel.close().wait()
+        }
+        // Belt-and-braces sweep: anything `handleClosed` didn't drain (e.g.
+        // a close path that doesn't fire it) gets cleaned up here.
+        linkLock.lock()
+        let stragglers = Array(linksByDeviceId.values)
+        linksByDeviceId.removeAll()
+        channelToDeviceId.removeAll()
+        linkLock.unlock()
+        for link in stragglers {
+            link.notifyClosed()
         }
 
         try? serverChannel?.close().wait()
