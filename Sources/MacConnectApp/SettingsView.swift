@@ -21,7 +21,7 @@ struct SettingsView: View {
                     .buttonStyle(.borderless)
                     Spacer()
                 }
-                Text("Settings").font(.headline)
+                Text("Settings", bundle: .module).font(.headline)
             }
             .padding(12)
             Divider()
