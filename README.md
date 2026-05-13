@@ -12,21 +12,25 @@ Working features:
 - In-app recovery when a pinned peer's certificate changes (e.g. peer was reinstalled): the popover shows a "Certificate changed" warning with a Reset Trust button instead of failing silently.
 - Plugins:
   - Ping (send + receive, banner notification on receive).
-  - Clipboard (manual push on outbound; auto-apply on inbound).
+  - Clipboard (manual push on outbound; auto-apply on inbound; image fallback sends the pasteboard image as a `clipboard-<uuid>.png` file payload when no text is present).
   - Notifications (receive Android notifications as macOS banners, with inline Reply for notifications that carry a `requestReplyId`).
   - Find My Phone (ring outbound).
   - Share (URL, text, and file payload — send and receive over a second TLS connection).
-- Menu-bar UI with a popover that lists discovered devices, their pair status, last-seen age for offline peers, and per-device actions.
-- Settings panel: editable broadcast name, SHA-256 fingerprint display (local + per pinned peer), per-plugin enable/disable toggles, Launch-at-Login toggle, pinned-device list with Forget action.
+  - MPRIS (now-playing tile in the device row with title/artist, Play-Pause, Next, Previous; control buttons disable when the peer reports the action as unsupported).
+  - Battery (peer's percent + charging indicator shown on the device row when paired and online).
+- Menu-bar UI: popover lists discovered devices with pair status, last-seen age for offline peers, paired-first ordering, and per-device actions. Active file transfers render an inline progress bar; the Settings panel keeps the last 20 completed transfers. Devices accept file drops directly when paired and online.
+- Connection lifecycle: TCP `SO_KEEPALIVE` plus Darwin `TCP_KEEPALIVE`/`KEEPINTVL`/`KEEPCNT` (30 / 10 / 3) so dead sockets are detected in ~60 s; 30-second app-layer `_keepalive` pings keep NAT mappings warm; a NIO `IdleStateHandler` (300 s) is the wedged-socket safety net.
+- Settings panel: editable broadcast name, SHA-256 fingerprint display (local + per pinned peer, with Copy buttons), per-plugin enable/disable toggles, per-device plugin overrides on each trusted-device row, Launch-at-Login toggle, pinned-device list with Forget action, Recent Transfers, and an About section with version + GitHub link.
 - "Send via MacConnect" Finder Services entry (right-click any file → Services → Send via MacConnect → pick a paired device).
 - mDNS / Bonjour discovery (`_kdeconnect._udp`) alongside legacy UDP broadcast — finds peers across access points and on networks where broadcast is filtered.
+- Localization scaffolding: `Localizable.xcstrings` with an `en` baseline; the SwiftPM resource bundle is copied into `MacConnect.app/Contents/Resources/` by `scripts/build-app.sh` so `Bundle.module` lookups resolve at runtime. No non-English translations are shipped yet.
 - Distribution: Release workflow builds a universal binary, signs with Apple Developer ID + Hardened Runtime, notarizes via App Store Connect API key, staples the ticket, and publishes a `.dmg` + `.zip` to a GitHub Release.
 
 Not implemented yet:
 
 - macOS Share Extension proper (the modern Share sheet entry). The current Services menu integration is the practical equivalent; a real `.appex` Share Extension requires app-extension build tooling that SwiftPM doesn't support natively.
-- MPRIS state parsing (packets are received but no media UI).
-- Clipboard image transfer (pending KDE Connect protocol alignment across implementations).
+- KDE Connect protocol v8 (post-TLS identity re-keying). The v7 implementation here interoperates with v7 peers; v8 is forward-compatibility only.
+- Non-English localizations. The catalog and lookup wiring are in place; entries beyond `en` are not yet provided.
 
 See [`ROADMAP.md`](ROADMAP.md) for upcoming work.
 
@@ -76,24 +80,26 @@ The first launch generates an RSA-2048 self-signed certificate under `~/Library/
 Sources/
   MacConnectCore/
     Logging.swift              # os.Logger subsystems
-    Settings/                  # device id, name, trusted-device store
+    Settings/                  # device id, name, trusted-device store, per-plugin + per-device overrides
     Packet/                    # NetworkPacket, IdentityPayload, PairPacketBuilder, PacketType
     Network/
       LanLinkProvider.swift    # UDP discovery + TCP listener + outbound dial
-      LanLink.swift            # per-device link wrapping a NIO Channel
+      LanLink.swift            # per-device link + 30 s keepalive ping
       KDEConnectChannelHandler.swift
-                               # plain-TCP identity then mTLS upgrade
-      NIOTransport.swift       # event-loop group + bootstraps
-      PayloadTransport.swift   # second-channel file transfer
+                               # plain-TCP identity then mTLS upgrade, idle-state close, readBuffer caps
+      NIOTransport.swift       # event-loop group + bootstraps + SO_KEEPALIVE/TCP_KEEPALIVE family
+      PayloadTransport.swift   # second-channel file transfer; receive-side serial queue + autoRead backpressure
       TLSContextBuilder.swift  # NIOSSL config + per-deviceId pinning verifier
       CertificateService.swift # local cert + pinned-peer store
       NetworkInterfaces.swift  # getifaddrs broadcast enumeration
     Device/                    # Device, DeviceManager
-    Plugin/                    # Plugin protocol, registry, plugin implementations
-  MacConnectApp/               # menu-bar executable (AppKit + SwiftUI popover)
-Tests/MacConnectCoreTests/     # XCTest packet round-trip tests
-scripts/build-app.sh           # assembles MacConnect.app from the executable
-.github/workflows/             # CI
+    Plugin/                    # Plugin protocol, registry, plugin implementations, TransferStore, MprisStore, BatteryStore
+  MacConnectApp/
+    Resources/Localizable.xcstrings  # en baseline; SwiftPM-processed
+    *.swift                          # menu-bar executable (AppKit + SwiftUI popover)
+Tests/MacConnectCoreTests/     # XCTest: packet round-trips, pair timestamp, PeerVerifier, EmbeddedChannel handler
+scripts/build-app.sh           # assembles MacConnect.app from the executable + copies SwiftPM resource bundle
+.github/workflows/             # CI (build+test, lint)
 ```
 
 ## Protocol
