@@ -44,7 +44,14 @@ public final class BatteryStore: ObservableObject {
 
     public func update(deviceId: String, with packet: NetworkPacket) {
         let charge = packet.body["currentCharge"]?.intValue.map(Int.init) ?? -1
-        guard charge >= 0 else { return }
+        // KDE Connect uses currentCharge == -1 to indicate the peer no
+        // longer reports battery (e.g. it's a desktop now, or the OS-level
+        // sensor went away). Drop the cache so the UI doesn't keep showing
+        // a stale value indefinitely.
+        guard charge >= 0 else {
+            states[deviceId] = nil
+            return
+        }
         let isCharging = packet.body["isCharging"]?.boolValue ?? false
         let thresholdEvent = packet.body["thresholdEvent"]?.intValue ?? 0
         states[deviceId] = State(
