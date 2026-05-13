@@ -462,7 +462,14 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     public func broadcastIdentity() {
         guard serverChannel != nil else { return }
-        guard broadcastFD >= 0 else { return }
+        // Self-heal if a transient startup failure (EMFILE, etc.) left us
+        // without an fd. The per-tick model used to recover automatically;
+        // a long-lived socket must do this explicitly or peer discovery
+        // stays permanently dead for the run.
+        if broadcastFD < 0 {
+            openBroadcastSocket()
+            guard broadcastFD >= 0 else { return }
+        }
         let identity = Settings.shared.ownIdentity(tcpPort: Int(tcpPort))
         guard let data = try? identity.toPacket().serialized() else { return }
 
