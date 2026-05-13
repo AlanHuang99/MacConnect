@@ -31,7 +31,7 @@
 - mDNS announce + browse via `NWListener` / `NWBrowser` (`_kdeconnect._udp`) alongside UDP broadcast (0.1.4).
 - "Send via MacConnect" Services menu entry for right-click → Send file from Finder (0.1.4).
 - TCP `SO_KEEPALIVE` + Darwin `TCP_KEEPALIVE`/`KEEPINTVL`/`KEEPCNT` and a 300 s `IdleStateHandler` so dead links are detected in ~60 s instead of the macOS default ~2 h (0.2.0).
-- 30 s app-layer `_keepalive` ping on every secured link (0.2.0).
+- ~~30 s app-layer `_keepalive` ping on every secured link (0.2.0).~~ Reverted in 0.2.1: KDE Connect Android shows a Ping notification for each, because peers that don't know the `_keepalive` flag treat the packet as an ordinary ping. OS-level TCP keepalive (above) is enough on its own.
 - Strong `Device.link` reference + lifecycle fixes; `applicationWillTerminate` tears down channels cleanly (0.2.0).
 - `KDEConnectChannelHandler` readBuffer caps (64 KiB pre-handshake, 4 MiB post) (0.2.0).
 - Pair packet timestamp in milliseconds (was seconds — some Android builds rejected the seconds-scale value) (0.2.0).
