@@ -14,7 +14,12 @@
 --commas inline
 --trimwhitespace always
 --ifdef no-indent
---self remove
+# `--self` defaults to `remove`, which strips `self.` inside os.Logger
+# string interpolation. The compiler rejects that because Logger's
+# interpolation arguments are @autoclosure @escaping. SwiftFormat does
+# not reason about that rule, so we disable `redundantSelf` entirely
+# and let the codebase use `self.` wherever it currently does.
+--disable redundantSelf
 --patternlet inline
 --linebreaks lf
 --semicolons never

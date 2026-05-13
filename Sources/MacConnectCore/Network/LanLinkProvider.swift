@@ -1,7 +1,7 @@
+import Darwin
 import Foundation
 import Network
 import NIOCore
-import Darwin
 
 /// Owns UDP discovery + TCP server. Discovers peers and creates secure links.
 ///
@@ -38,7 +38,7 @@ public final class LanLinkProvider: @unchecked Sendable {
     public func start() throws {
         try CertificateService.shared.ensureIdentity()
         let (channel, port) = try NIOTransport.shared.startListener(
-            portRange: Settings.minTCPPort...Settings.maxTCPPort,
+            portRange: Settings.minTCPPort ... Settings.maxTCPPort,
             onIdentity: { [weak self] identity, channel in
                 self?.handleIdentity(identity, channel: channel)
             },
@@ -52,8 +52,8 @@ public final class LanLinkProvider: @unchecked Sendable {
                 self?.handleClosed(channel: channel)
             }
         )
-        self.serverChannel = channel
-        self.tcpPort = port
+        serverChannel = channel
+        tcpPort = port
         Log.net.info("TCP listener on \(port, privacy: .public)")
 
         try startUDPListener()
@@ -80,7 +80,15 @@ public final class LanLinkProvider: @unchecked Sendable {
         broadcastFD = fd
     }
 
-    public func stop() {
+    /// Tear down the discovery + listener stack with a hard deadline.
+    ///
+    /// Per-channel TCP graceful close requires a peer FIN-ACK; an offline
+    /// peer leaves the kernel waiting the full TCP close timeout (tens of
+    /// seconds). Without a deadline this directly translates to a slow
+    /// Quit menu. We fire all closes in parallel, wait up to `deadline`
+    /// for them to settle, then move on and let the kernel reap whatever
+    /// remains as the process exits.
+    public func stop(deadline: DispatchTime = .now() + 1.0) {
         broadcastTimer?.cancel()
         broadcastTimer = nil
         udpListener?.cancel()
@@ -101,17 +109,28 @@ public final class LanLinkProvider: @unchecked Sendable {
         // intentionally do NOT clear the maps yet: closing a channel fires
         // `handleClosed` on the event loop, which needs the maps populated
         // so it can resolve the deviceId and invoke `link.notifyClosed()`.
-        // notifyClosed cancels the heartbeat task and runs the
-        // DeviceManager.detach hop to the main actor — skipping it leaks
-        // the heartbeat timer and leaves the device row stuck "online".
         linkLock.lock()
         let activeLinks = Array(linksByDeviceId.values)
         linkLock.unlock()
+
+        // Fan all closes out at once, count them down with a DispatchGroup
+        // so we can bound the total wait.
+        let group = DispatchGroup()
         for link in activeLinks {
-            try? link.activeChannel.close().wait()
+            group.enter()
+            link.activeChannel.close().whenComplete { _ in group.leave() }
         }
+        if let serverChannel {
+            group.enter()
+            serverChannel.close().whenComplete { _ in group.leave() }
+        }
+        if group.wait(timeout: deadline) == .timedOut {
+            Log.net.notice("stop() timed out waiting for channel closes; proceeding")
+        }
+
         // Belt-and-braces sweep: anything `handleClosed` didn't drain (e.g.
-        // a close path that doesn't fire it) gets cleaned up here.
+        // a close path that doesn't fire it, or a wait that timed out
+        // before NIO finished) gets cleaned up here.
         linkLock.lock()
         let stragglers = Array(linksByDeviceId.values)
         linksByDeviceId.removeAll()
@@ -121,7 +140,6 @@ public final class LanLinkProvider: @unchecked Sendable {
             link.notifyClosed()
         }
 
-        try? serverChannel?.close().wait()
         serverChannel = nil
     }
 
@@ -262,7 +280,8 @@ public final class LanLinkProvider: @unchecked Sendable {
     private func handleSecured(channel: Channel) {
         linkLock.lock()
         guard let deviceId = channelToDeviceId[ObjectIdentifier(channel)],
-              let link = linksByDeviceId[deviceId] else {
+              let link = linksByDeviceId[deviceId]
+        else {
             linkLock.unlock()
             return
         }
@@ -348,8 +367,11 @@ public final class LanLinkProvider: @unchecked Sendable {
             }
         }
         listener.start(queue: queue)
-        self.udpListener = listener
-        Log.net.info("UDP listener on \(Settings.udpPort, privacy: .public) (also advertising \(Self.bonjourServiceType, privacy: .public))")
+        udpListener = listener
+        Log.net
+            .info(
+                "UDP listener on \(Settings.udpPort, privacy: .public) (also advertising \(Self.bonjourServiceType, privacy: .public))"
+            )
     }
 
     // MARK: - mDNS browse
@@ -377,7 +399,7 @@ public final class LanLinkProvider: @unchecked Sendable {
             }
         }
         browser.start(queue: queue)
-        self.mdnsBrowser = browser
+        mdnsBrowser = browser
         Log.net.info("mDNS browser searching \(Self.bonjourServiceType, privacy: .public)")
     }
 
@@ -416,7 +438,7 @@ public final class LanLinkProvider: @unchecked Sendable {
               let identity = IdentityPayload.from(packet: packet) else { return }
         if identity.deviceId == Settings.shared.deviceId { return }
 
-        guard let port = identity.tcpPort, (1714...1764).contains(port) else { return }
+        guard let port = identity.tcpPort, (1714 ... 1764).contains(port) else { return }
         guard case .hostPort(let host, _) = endpoint else { return }
         let hostStr: String
         switch host {
@@ -443,7 +465,10 @@ public final class LanLinkProvider: @unchecked Sendable {
         linkLock.unlock()
         if let existing, existing.isSecure { return }
 
-        Log.net.info("Connecting to \(identity.deviceName, privacy: .public) at \(hostStr, privacy: .public):\(port, privacy: .public)")
+        Log.net
+            .info(
+                "Connecting to \(identity.deviceName, privacy: .public) at \(hostStr, privacy: .public):\(port, privacy: .public)"
+            )
 
         let future = NIOTransport.shared.connect(
             host: hostStr,
@@ -464,7 +489,10 @@ public final class LanLinkProvider: @unchecked Sendable {
             self?.handleIdentity(identity, channel: channel)
         }
         future.whenFailure { err in
-            Log.net.error("Outbound connect failed to \(hostStr, privacy: .public): \(err.localizedDescription, privacy: .public)")
+            Log.net
+                .error(
+                    "Outbound connect failed to \(hostStr, privacy: .public): \(err.localizedDescription, privacy: .public)"
+                )
         }
     }
 

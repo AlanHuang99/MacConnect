@@ -1,5 +1,5 @@
-import Foundation
 import Combine
+import Foundation
 
 /// Renders the peer's battery state in the device row. KDE Connect
 /// Android pushes `kdeconnect.battery` on every state change; we also

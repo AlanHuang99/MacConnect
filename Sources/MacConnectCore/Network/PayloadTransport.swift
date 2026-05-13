@@ -13,8 +13,7 @@ import NIOTLS
 /// receiver does the inverse: TLS-client connect to host:port, write all
 /// bytes to a target file. Both sides use the existing per-device cert pin.
 public enum PayloadTransport {
-
-    public static let portRange: ClosedRange<UInt16> = 1739...1764
+    public static let portRange: ClosedRange<UInt16> = 1739 ... 1764
     public static let chunkBytes: Int = 64 * 1024
 
     // MARK: - Sender
@@ -116,7 +115,10 @@ public enum PayloadTransport {
             }
         }
 
-        Log.net.info("Payload listener bound on port \(port, privacy: .public) for \(fileURL.lastPathComponent, privacy: .public)")
+        Log.net
+            .info(
+                "Payload listener bound on port \(port, privacy: .public) for \(fileURL.lastPathComponent, privacy: .public)"
+            )
         return (port, donePromise.futureResult)
     }
 
@@ -232,7 +234,7 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
                     do {
                         try promise.futureResult.wait()
                     } catch {
-                        self.onError(error)
+                        onError(error)
                         channel.eventLoop.execute { channel.close(promise: nil) }
                         return
                     }
@@ -245,7 +247,7 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
                 }
             } catch {
                 Log.net.error("Payload read error: \(error.localizedDescription, privacy: .public)")
-                self.onError(error)
+                onError(error)
                 channel.eventLoop.execute { channel.close(promise: nil) }
             }
         }
@@ -403,13 +405,16 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     private var finished = false
-    private func finish(on channel: Channel, success: Bool, error: Error? = nil) {
+    private func finish(on _: Channel, success: Bool, error: Error? = nil) {
         guard !finished else { return }
         finished = true
         try? fileHandle?.close()
         fileHandle = nil
         if success {
-            Log.net.info("Payload received \(self.bytesReceived, privacy: .public) bytes -> \(self.fileURL.lastPathComponent, privacy: .public)")
+            Log.net
+                .info(
+                    "Payload received \(self.bytesReceived, privacy: .public) bytes -> \(self.fileURL.lastPathComponent, privacy: .public)"
+                )
             onComplete()
         } else {
             try? FileManager.default.removeItem(at: fileURL)

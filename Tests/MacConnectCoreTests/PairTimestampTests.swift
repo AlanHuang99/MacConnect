@@ -1,5 +1,5 @@
-import XCTest
 @testable import MacConnectCore
+import XCTest
 
 final class PairTimestampTests: XCTestCase {
     /// KDE Connect Android compares the pair timestamp in milliseconds and

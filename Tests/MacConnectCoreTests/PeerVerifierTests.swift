@@ -1,6 +1,6 @@
-import XCTest
-import NIOSSL
 @testable import MacConnectCore
+import NIOSSL
+import XCTest
 
 /// Exercises the TOFU + pinning behaviour of `PeerVerifier` against a
 /// throwaway `CertificateService` that owns its own temp directory. The
@@ -34,7 +34,7 @@ final class PeerVerifierTests: XCTestCase {
     func testFingerprintIsColonGroupedSha256() {
         let fp = service.sha256Fingerprint(ofDER: leafDER)
         XCTAssertEqual(fp.count, 64, "SHA-256 hex should be 64 chars before grouping")
-        XCTAssertTrue(fp.allSatisfy { $0.isHexDigit })
+        XCTAssertTrue(fp.allSatisfy(\.isHexDigit))
     }
 }
 

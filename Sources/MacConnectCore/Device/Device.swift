@@ -1,5 +1,5 @@
-import Foundation
 import Combine
+import Foundation
 
 @MainActor
 public final class Device: ObservableObject, Identifiable {
@@ -20,7 +20,7 @@ public final class Device: ObservableObject, Identifiable {
     /// what changed — the pre-existing pinned fingerprint comes from
     /// `CertificateService.fingerprint(forTrustedDeviceId:)`.
     @Published public var presentedFingerprint: String?
-    @Published public var lastSeen: Date = Date()
+    @Published public var lastSeen: Date = .init()
 
     public var protocolVersion: Int
     public var incomingCapabilities: [String]
@@ -45,17 +45,20 @@ public final class Device: ObservableObject, Identifiable {
     }
 
     public func update(from identity: IdentityPayload) {
-        self.name = identity.deviceName
-        self.type = identity.deviceType
-        self.protocolVersion = identity.protocolVersion
-        self.incomingCapabilities = identity.incomingCapabilities
-        self.outgoingCapabilities = identity.outgoingCapabilities
-        self.lastSeen = Date()
+        name = identity.deviceName
+        type = identity.deviceType
+        protocolVersion = identity.protocolVersion
+        incomingCapabilities = identity.incomingCapabilities
+        outgoingCapabilities = identity.outgoingCapabilities
+        lastSeen = Date()
     }
 
     public func send(_ packet: NetworkPacket) {
         guard let link else {
-            Log.net.warning("Device \(self.id, privacy: .public) has no link; dropping packet \(packet.type, privacy: .public)")
+            Log.net
+                .warning(
+                    "Device \(self.id, privacy: .public) has no link; dropping packet \(packet.type, privacy: .public)"
+                )
             return
         }
         link.send(packet)

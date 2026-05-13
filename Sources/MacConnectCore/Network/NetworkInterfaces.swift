@@ -1,5 +1,5 @@
-import Foundation
 import Darwin
+import Foundation
 
 public struct InterfaceInfo: Sendable, Hashable {
     public let name: String

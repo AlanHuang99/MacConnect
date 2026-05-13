@@ -1,6 +1,6 @@
 import AppKit
-import SwiftUI
 import MacConnectCore
+import SwiftUI
 import UserNotifications
 
 @main
@@ -8,6 +8,8 @@ import UserNotifications
 final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCenterDelegate {
     private var statusItem: NSStatusItem!
     private var popover: NSPopover!
+    private var popoverEventMonitor: Any?
+    private var welcomeWindowController: WelcomeWindowController?
 
     static func main() {
         let app = NSApplication.shared
@@ -17,28 +19,85 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         app.run()
     }
 
-    func applicationDidFinishLaunching(_ notification: Notification) {
+    func applicationDidFinishLaunching(_: Notification) {
+        // Order matters: the status item must exist BEFORE any heavy work
+        // so the user always has a way to interact with (and quit) the app
+        // even if networking, openssl, or Launch Services are slow. With
+        // `LSUIElement=true` there's no Dock icon — losing the status item
+        // = losing the entire UI.
         registerPlugins()
-        configureNotificationCenter()
-        startNetworking()
         setupStatusItem()
-        registerServices()
+        configureNotificationCenter()
+        showWelcomeWindowIfFirstRun()
+
+        // Networking touches openssl (subprocess), NIO bind, and Bonjour —
+        // any of which can stall on first launch (cold launchd, MDM,
+        // multicast permission gate). Move off the main thread so the UI
+        // stays responsive.
+        Task.detached(priority: .userInitiated) {
+            do {
+                try LanLinkProvider.shared.start()
+            } catch {
+                Log.app.error("Failed to start networking: \(error.localizedDescription, privacy: .public)")
+            }
+        }
+
+        // Services rescan is a full Launch Services walk; defer it a beat
+        // and only run when the Info.plist NSServices block actually
+        // changed since the last launch.
+        Task.detached(priority: .utility) {
+            await MainActor.run { Self.registerServicesIfNeeded() }
+        }
     }
 
-    func applicationWillTerminate(_ notification: Notification) {
-        // Tears down the broadcast timer, UDP/mDNS listeners, all live
-        // per-device channels, and the TCP listener. Without this, AppKit
-        // killed the process while NIO event loops still had open sockets
-        // — fine for the OS, noisy in logs.
-        LanLinkProvider.shared.stop()
+    func applicationWillTerminate(_: Notification) {
+        // Time-boxed teardown. Each TCP graceful close requires a peer
+        // FIN-ACK; sleeping phones / dead Wi-Fi can leave the kernel
+        // waiting the full close timeout. We give all closes a budget,
+        // then let the kernel reap any stragglers when the process exits.
+        LanLinkProvider.shared.stop(deadline: .now() + 0.75)
+        NIOTransport.shared.shutdown(deadline: .now() + 0.5)
     }
 
-    private func registerServices() {
-        NSApp.servicesProvider = self
-        // Tell Launch Services to re-scan our Info.plist for NSServices, so
-        // a freshly installed/upgraded build appears in the Services menu
-        // without requiring a logout.
+    private static func registerServicesIfNeeded() {
+        NSApp.servicesProvider = sharedDelegate
+        // Hash the NSServices array; only rescan when it changed. A full
+        // NSUpdateDynamicServices() call is multi-second on first launch
+        // and was running every cold start in 0.2.x.
+        let fingerprint = Self.servicesFingerprint()
+        let key = "macconnect.servicesFingerprint"
+        if UserDefaults.standard.string(forKey: key) == fingerprint {
+            return
+        }
         NSUpdateDynamicServices()
+        UserDefaults.standard.set(fingerprint, forKey: key)
+    }
+
+    private static var sharedDelegate: AppDelegate? {
+        NSApp.delegate as? AppDelegate
+    }
+
+    private static func servicesFingerprint() -> String {
+        // Stable hash of the NSServices array. If it ever stops matching
+        // the value in Info.plist, the next launch will trigger a rescan.
+        guard let services = Bundle.main.object(forInfoDictionaryKey: "NSServices") as? [Any],
+              let data = try? PropertyListSerialization.data(fromPropertyList: services, format: .binary, options: 0)
+        else {
+            return "missing"
+        }
+        return data.base64EncodedString()
+    }
+
+    private func showWelcomeWindowIfFirstRun() {
+        guard WelcomeWindowController.shouldShow() else { return }
+        let controller = WelcomeWindowController()
+        controller.onClose = { [weak self] in
+            self?.welcomeWindowController = nil
+            NSApp.setActivationPolicy(.accessory)
+        }
+        welcomeWindowController = controller
+        NSApp.setActivationPolicy(.regular)
+        controller.show()
     }
 
     private func registerPlugins() {
@@ -56,27 +115,31 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         Notifier.registerCategories()
+        // On a true first run, the welcome window owns the first
+        // authorization prompt so it has visible context. Asking here
+        // anyway would race the welcome window and surface the system
+        // dialog before the user sees any MacConnect UI — defeating the
+        // "prompt with context" sequencing.
+        if WelcomeWindowController.shouldShow() { return }
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error {
-                Log.app.notice("Notification authorization request failed: \(error.localizedDescription, privacy: .public)")
+                Log.app
+                    .notice(
+                        "Notification authorization request failed: \(error.localizedDescription, privacy: .public)"
+                    )
             } else if !granted {
                 Log.app.notice("Notification authorization not granted")
             }
         }
     }
 
-    private func startNetworking() {
-        do {
-            try LanLinkProvider.shared.start()
-        } catch {
-            Log.app.error("Failed to start networking: \(error.localizedDescription, privacy: .public)")
-        }
-    }
-
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(systemSymbolName: "iphone.radiowaves.left.and.right", accessibilityDescription: "MacConnect")
+            button.image = NSImage(
+                systemSymbolName: "iphone.radiowaves.left.and.right",
+                accessibilityDescription: "MacConnect"
+            )
             button.action = #selector(togglePopover)
             button.target = self
         }
@@ -89,10 +152,35 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc private func togglePopover() {
         guard let button = statusItem.button else { return }
         if popover.isShown {
-            popover.performClose(nil)
+            closePopover()
         } else {
+            // Do NOT call NSApp.activate(ignoringOtherApps: true) — it
+            // pulls our accessory app frontmost and on recent macOS
+            // suppresses the .transient outside-click dismissal the user
+            // expects. The popover becomes key on its own.
             popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
-            NSApp.activate(ignoringOtherApps: true)
+            installPopoverDismissMonitor()
+        }
+    }
+
+    /// Belt-and-braces for `.transient` dismissal: a global mouse-down
+    /// monitor closes the popover if the user clicks anywhere outside
+    /// our app. The system's own outside-click handling generally fires,
+    /// but this guarantees the behaviour across macOS versions.
+    private func installPopoverDismissMonitor() {
+        if popoverEventMonitor != nil { return }
+        popoverEventMonitor = NSEvent.addGlobalMonitorForEvents(
+            matching: [.leftMouseDown, .rightMouseDown]
+        ) { [weak self] _ in
+            self?.closePopover()
+        }
+    }
+
+    private func closePopover() {
+        if popover.isShown { popover.performClose(nil) }
+        if let monitor = popoverEventMonitor {
+            NSEvent.removeMonitor(monitor)
+            popoverEventMonitor = nil
         }
     }
 
@@ -105,7 +193,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     @objc
     func sendFileToDevice(
         _ pasteboard: NSPasteboard,
-        userData: String?,
+        userData _: String?,
         error: AutoreleasingUnsafeMutablePointer<NSString>
     ) {
         let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
@@ -149,14 +237,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         for url in urls {
             SharePlugin.sendFile(url, to: target)
         }
-        Log.plugin.info("Queued \(urls.count, privacy: .public) file(s) via Services menu to \(target.id, privacy: .public)")
+        Log.plugin
+            .info("Queued \(urls.count, privacy: .public) file(s) via Services menu to \(target.id, privacy: .public)")
     }
 
     // MARK: - UNUserNotificationCenterDelegate
 
     nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
-        willPresent notification: UNNotification,
+        _: UNUserNotificationCenter,
+        willPresent _: UNNotification,
         withCompletionHandler completionHandler: @escaping @Sendable (UNNotificationPresentationOptions) -> Void
     ) {
         // Show banners even when the menu-bar app is "active" (popover open).
@@ -164,7 +253,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     nonisolated func userNotificationCenter(
-        _ center: UNUserNotificationCenter,
+        _: UNUserNotificationCenter,
         didReceive response: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping @Sendable () -> Void
     ) {

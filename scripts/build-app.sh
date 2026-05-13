@@ -69,6 +69,7 @@ if [[ ! -f "$ICON_SRC" ]]; then
 fi
 cp "$ICON_SRC" "$RES/AppIcon.icns"
 
+YEAR="$(date +%Y)"
 cat > "$CONTENTS/Info.plist" <<EOF
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -84,7 +85,10 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <key>CFBundleVersion</key><string>${VERSION}</string>
     <key>LSMinimumSystemVersion</key><string>13.0</string>
     <key>LSUIElement</key><true/>
+    <key>LSApplicationCategoryType</key><string>public.app-category.utilities</string>
     <key>NSHighResolutionCapable</key><true/>
+    <key>NSHumanReadableCopyright</key>
+    <string>© ${YEAR} MacConnect contributors. GPL-3.0-or-later.</string>
     <key>NSLocalNetworkUsageDescription</key>
     <string>MacConnect discovers KDE Connect devices on your local network.</string>
     <key>NSBonjourServices</key>

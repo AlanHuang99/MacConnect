@@ -1,5 +1,5 @@
-import Foundation
 import AppKit
+import Foundation
 
 /// Clipboard sync.
 ///
@@ -31,10 +31,14 @@ public final class ClipboardPlugin: Plugin, @unchecked Sendable {
         // Skip stale .connect packets that are older than ~30s — these can
         // arrive on reconnect and would clobber a fresher local clipboard.
         if packet.type == PacketType.clipboardConnect,
-           let ts = packet.body["timestamp"]?.intValue, ts > 0 {
+           let ts = packet.body["timestamp"]?.intValue, ts > 0
+        {
             let packetTime = TimeInterval(ts) / 1000.0
             if Date().timeIntervalSince1970 - packetTime > 30 {
-                Log.plugin.info("Ignoring stale clipboard.connect from \(name, privacy: .public) (\(packetTime, privacy: .public))")
+                Log.plugin
+                    .info(
+                        "Ignoring stale clipboard.connect from \(name, privacy: .public) (\(packetTime, privacy: .public))"
+                    )
                 return
             }
         }
@@ -81,7 +85,8 @@ public final class ClipboardPlugin: Plugin, @unchecked Sendable {
     private static func sendClipboardImage(_ image: NSImage, to device: Device) {
         guard let tiffData = image.tiffRepresentation,
               let bitmap = NSBitmapImageRep(data: tiffData),
-              let pngData = bitmap.representation(using: .png, properties: [:]) else {
+              let pngData = bitmap.representation(using: .png, properties: [:])
+        else {
             Log.plugin.error("Could not encode clipboard image as PNG")
             return
         }
@@ -97,7 +102,10 @@ public final class ClipboardPlugin: Plugin, @unchecked Sendable {
             Log.plugin.error("Could not write clipboard image to temp: \(error.localizedDescription, privacy: .public)")
             return
         }
-        Log.plugin.info("Pushing clipboard image (\(pngData.count, privacy: .public) bytes) to \(device.id, privacy: .public)")
+        Log.plugin
+            .info(
+                "Pushing clipboard image (\(pngData.count, privacy: .public) bytes) to \(device.id, privacy: .public)"
+            )
         // deleteAfterSend ensures /tmp doesn't accumulate
         // macconnect-clipboard-*.png files after repeated image pushes.
         SharePlugin.sendFile(tmpURL, to: device, deleteAfterSend: true)

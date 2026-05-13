@@ -94,6 +94,7 @@ public final class Settings: ObservableObject, @unchecked Sendable {
     }
 
     // MARK: - Per-device plugin overrides
+
     //
     // Layered on top of the global enable/disable: a plugin reaches the
     // dispatcher for a given peer only if it is globally enabled AND not
@@ -149,7 +150,8 @@ public final class Settings: ObservableObject, @unchecked Sendable {
         let svc = IOServiceGetMatchingService(port, IOServiceMatching("IOPlatformExpertDevice"))
         guard svc != 0 else { return nil }
         defer { IOObjectRelease(svc) }
-        guard let prop = IORegistryEntryCreateCFProperty(svc, "IOPlatformUUID" as CFString, kCFAllocatorDefault, 0) else {
+        guard let prop = IORegistryEntryCreateCFProperty(svc, "IOPlatformUUID" as CFString, kCFAllocatorDefault, 0)
+        else {
             return nil
         }
         return prop.takeRetainedValue() as? String

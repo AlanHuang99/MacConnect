@@ -91,15 +91,17 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
         var inbound = unwrapInboundIn(data)
         readBuffer.writeBuffer(&inbound)
 
-        let limit: Int
-        switch state {
+        let limit: Int = switch state {
         case .awaitingPlainIdentity, .awaitingTLSHandshake:
-            limit = Self.plainIdentityBufferLimit
+            Self.plainIdentityBufferLimit
         case .ready:
-            limit = Self.readyBufferLimit
+            Self.readyBufferLimit
         }
         if readBuffer.readableBytes > limit {
-            Log.net.error("Read buffer overflow (\(self.readBuffer.readableBytes, privacy: .public) > \(limit, privacy: .public)) for \(self.peerDeviceId ?? "?", privacy: .public); closing channel")
+            Log.net
+                .error(
+                    "Read buffer overflow (\(self.readBuffer.readableBytes, privacy: .public) > \(limit, privacy: .public)) for \(self.peerDeviceId ?? "?", privacy: .public); closing channel"
+                )
             context.close(promise: nil)
             return
         }
@@ -158,17 +160,18 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
         guard let lfIdx = firstLF(in: readBuffer) else { return }
         let lineLen = lfIdx - readBuffer.readerIndex
         guard let lineSlice = readBuffer.readSlice(length: lineLen),
-              let _ = readBuffer.readBytes(length: 1) else { return }
+              readBuffer.readBytes(length: 1) != nil else { return }
         let data = Data(lineSlice.readableBytesView)
 
         guard let packet = try? NetworkPacket.parse(data),
-              let identity = IdentityPayload.from(packet: packet) else {
+              let identity = IdentityPayload.from(packet: packet)
+        else {
             Log.net.error("Plain-TCP identity parse failed")
             context.close(promise: nil)
             return
         }
-        self.peerIdentity = identity
-        self.peerDeviceId = identity.deviceId
+        peerIdentity = identity
+        peerDeviceId = identity.deviceId
         onIdentity(identity, context.channel)
 
         switch role {
@@ -187,16 +190,17 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
 
     private func drainBufferAsByteBuffer() -> ByteBuffer? {
         guard readBuffer.readableBytes > 0 else { return nil }
-        let slice = readBuffer.readSlice(length: readBuffer.readableBytes)
-        return slice
+        return readBuffer.readSlice(length: readBuffer.readableBytes)
     }
 
     // MARK: - TLS install
 
     private func installSSLHandlerAndReplay(context: ChannelHandlerContext, isServer: Bool, leftover: ByteBuffer?) {
         let verify: NIOSSLCustomVerificationCallback = { [weak self] peerCerts, promise in
-            guard let self else { promise.succeed(.failed); return }
-            guard let deviceId = self.peerDeviceId else {
+            guard let self else { promise.succeed(.failed)
+                return
+            }
+            guard let deviceId = peerDeviceId else {
                 Log.pair.error("TLS verify with no peer deviceId")
                 promise.succeed(.failed)
                 return
@@ -204,10 +208,16 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
             let result = PeerVerifier.verify(deviceId: deviceId, peerCerts: peerCerts)
             switch result {
             case .accepted, .pinnedMatch:
-                Log.pair.info("Peer cert accepted for \(deviceId, privacy: .public) (\(String(describing: result), privacy: .public))")
+                Log.pair
+                    .info(
+                        "Peer cert accepted for \(deviceId, privacy: .public) (\(String(describing: result), privacy: .public))"
+                    )
                 promise.succeed(.certificateVerified)
             case .pinnedMismatch(let fingerprint):
-                Log.pair.error("Peer cert MISMATCH for \(deviceId, privacy: .public) — refusing (presented \(fingerprint, privacy: .public))")
+                Log.pair
+                    .error(
+                        "Peer cert MISMATCH for \(deviceId, privacy: .public) — refusing (presented \(fingerprint, privacy: .public))"
+                    )
                 Task { @MainActor in
                     DeviceManager.shared.flagPinMismatch(deviceId: deviceId, presentedFingerprint: fingerprint)
                 }
@@ -219,14 +229,13 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
         }
 
         do {
-            let sslHandler: ChannelHandler
-            if isServer {
-                sslHandler = NIOSSLServerHandler(
+            let sslHandler: ChannelHandler = if isServer {
+                NIOSSLServerHandler(
                     context: sslContext,
                     customVerificationCallback: verify
                 )
             } else {
-                sslHandler = try NIOSSLClientHandler(
+                try NIOSSLClientHandler(
                     context: sslContext,
                     serverHostname: nil,
                     customVerificationCallback: verify
@@ -252,7 +261,7 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
         while let lfIdx = firstLF(in: readBuffer) {
             let lineLen = lfIdx - readBuffer.readerIndex
             guard let line = readBuffer.readSlice(length: lineLen),
-                  let _ = readBuffer.readBytes(length: 1) else { break }
+                  readBuffer.readBytes(length: 1) != nil else { break }
             let data = Data(line.readableBytesView)
             if data.isEmpty { continue }
             do {
