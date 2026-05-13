@@ -93,6 +93,57 @@ public final class Settings: ObservableObject, @unchecked Sendable {
         disabledPluginIds = s
     }
 
+    // MARK: - Per-device plugin overrides
+    //
+    // Layered on top of the global enable/disable: a plugin reaches the
+    // dispatcher for a given peer only if it is globally enabled AND not
+    // in that peer's per-device disabled set. Per-device overrides do
+    // not affect outgoing capability advertisement — the peer still sees
+    // us as capable; we just silently drop inbound packets we don't want.
+
+    private let ud_disabledPluginsByDevice = "macconnect.disabledPluginsByDevice"
+
+    /// Dictionary keyed by deviceId → set of plugin identifiers the user
+    /// has explicitly disabled for that peer.
+    public var disabledPluginsByDevice: [String: Set<String>] {
+        get {
+            guard let raw = defaults.dictionary(forKey: ud_disabledPluginsByDevice) as? [String: [String]] else {
+                return [:]
+            }
+            return raw.mapValues(Set.init)
+        }
+        set {
+            let raw = newValue.mapValues(Array.init)
+            defaults.set(raw, forKey: ud_disabledPluginsByDevice)
+            DispatchQueue.main.async { self.objectWillChange.send() }
+        }
+    }
+
+    public func isPluginEnabled(_ pluginId: String, forDevice deviceId: String) -> Bool {
+        guard isPluginEnabled(pluginId) else { return false }
+        return !(disabledPluginsByDevice[deviceId]?.contains(pluginId) ?? false)
+    }
+
+    public func setPluginEnabled(_ pluginId: String, _ enabled: Bool, forDevice deviceId: String) {
+        var all = disabledPluginsByDevice
+        var s = all[deviceId] ?? []
+        if enabled { s.remove(pluginId) } else { s.insert(pluginId) }
+        if s.isEmpty {
+            all.removeValue(forKey: deviceId)
+        } else {
+            all[deviceId] = s
+        }
+        disabledPluginsByDevice = all
+    }
+
+    /// Drop all per-device overrides for a peer — called when the user
+    /// unpairs / forgets that peer.
+    public func clearPerDevicePluginOverrides(forDevice deviceId: String) {
+        var all = disabledPluginsByDevice
+        all.removeValue(forKey: deviceId)
+        disabledPluginsByDevice = all
+    }
+
     private static func platformUUID() -> String? {
         let port = kIOMainPortDefault
         let svc = IOServiceGetMatchingService(port, IOServiceMatching("IOPlatformExpertDevice"))
