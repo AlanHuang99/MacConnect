@@ -47,6 +47,7 @@ struct StatusView: View {
     private func requestNowPlayingFromPeers() {
         for device in manager.deviceList() where device.isPaired && device.isReachable {
             MprisPlugin.requestNowPlaying(from: device)
+            BatteryPlugin.requestUpdate(from: device)
         }
     }
 
@@ -134,6 +135,7 @@ struct DeviceRow: View {
     @ObservedObject var device: Device
     @ObservedObject private var transfers = TransferStore.shared
     @ObservedObject private var mpris = MprisStore.shared
+    @ObservedObject private var battery = BatteryStore.shared
     @State private var isDropTarget: Bool = false
 
     var body: some View {
@@ -335,6 +337,9 @@ struct DeviceRow: View {
             bits.append("online")
         } else if let age = lastSeenAge {
             bits.append("last seen \(age)")
+        }
+        if let bat = battery.state(for: device.id), device.isReachable {
+            bits.append("\(bat.currentCharge)%\(bat.isCharging ? " ⚡" : "")")
         }
         return bits.joined(separator: " · ")
     }

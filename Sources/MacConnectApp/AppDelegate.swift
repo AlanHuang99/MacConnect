@@ -48,6 +48,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         registry.register(NotificationPlugin())
         registry.register(FindMyPhonePlugin())
         registry.register(MprisPlugin())
+        registry.register(BatteryPlugin())
         registry.register(SharePlugin())
     }
 
