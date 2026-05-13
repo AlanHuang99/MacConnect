@@ -1,5 +1,6 @@
 import AppKit
 import MacConnectCore
+import Network
 import SwiftUI
 import UserNotifications
 
@@ -213,12 +214,39 @@ private struct WelcomeView: View {
     }
 
     /// macOS gates UDP broadcast / Bonjour behind the Local Network
-    /// privacy prompt on macOS 14+. Touching the LanLinkProvider's
-    /// refresh path triggers the system dialog explicitly, with our
-    /// welcome window on screen for context.
+    /// privacy prompt on macOS 14+. We drive a dedicated NWConnection
+    /// here rather than calling `LanLinkProvider.refresh()`, because
+    /// the provider's broadcast path is a no-op until its server
+    /// channel is bound — and provider startup runs in a detached task,
+    /// so it may not be ready when the user clicks Allow. This way the
+    /// system prompt surfaces immediately and we only mark the row
+    /// complete once the send actually fires (or definitively fails).
     private func probeLocalNetwork() {
-        LanLinkProvider.shared.refresh()
-        localNetworkProbed = true
+        let endpoint = NWEndpoint.hostPort(
+            host: NWEndpoint.Host("255.255.255.255"),
+            port: NWEndpoint.Port(rawValue: MacConnectCore.Settings.udpPort)!
+        )
+        let params = NWParameters.udp
+        params.allowLocalEndpointReuse = true
+        let connection = NWConnection(to: endpoint, using: params)
+        // The Network framework binds lazily; force the prompt by
+        // moving to `.ready` and then sending a single zero byte —
+        // a malformed packet that any peer drops, but enough to make
+        // macOS classify the app as touching the local network.
+        connection.stateUpdateHandler = { state in
+            switch state {
+            case .ready:
+                connection.send(content: Data([0]), completion: .contentProcessed { _ in
+                    DispatchQueue.main.async { localNetworkProbed = true }
+                    connection.cancel()
+                })
+            case .failed, .cancelled:
+                DispatchQueue.main.async { localNetworkProbed = true }
+            default:
+                break
+            }
+        }
+        connection.start(queue: .global(qos: .userInitiated))
     }
 
     static func isTranslocated() -> Bool {

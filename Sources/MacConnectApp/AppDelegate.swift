@@ -115,9 +115,12 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let center = UNUserNotificationCenter.current()
         center.delegate = self
         Notifier.registerCategories()
-        // Authorization is requested by the welcome window on first run so
-        // the prompt has visible context. Returning users still get an
-        // idempotent ask here in case the welcome window was skipped.
+        // On a true first run, the welcome window owns the first
+        // authorization prompt so it has visible context. Asking here
+        // anyway would race the welcome window and surface the system
+        // dialog before the user sees any MacConnect UI — defeating the
+        // "prompt with context" sequencing.
+        if WelcomeWindowController.shouldShow() { return }
         center.requestAuthorization(options: [.alert, .sound]) { granted, error in
             if let error {
                 Log.app
