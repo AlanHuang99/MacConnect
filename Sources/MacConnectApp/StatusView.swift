@@ -22,7 +22,7 @@ struct StatusView: View {
                     } else {
                         ScrollView {
                             VStack(alignment: .leading, spacing: 8) {
-                                ForEach(manager.deviceList()) { device in
+                                ForEach(sortedDevices) { device in
                                     DeviceRow(device: device)
                                     Divider()
                                 }
@@ -47,6 +47,16 @@ struct StatusView: View {
     private func requestNowPlayingFromPeers() {
         for device in manager.deviceList() where device.isPaired && device.isReachable {
             MprisPlugin.requestNowPlaying(from: device)
+        }
+    }
+
+    /// Paired devices first, then by name; gives the popover a stable
+    /// "people you talk to" grouping above the discovery noise.
+    private var sortedDevices: [Device] {
+        manager.deviceList().sorted { lhs, rhs in
+            if lhs.isPaired != rhs.isPaired { return lhs.isPaired }
+            if lhs.isReachable != rhs.isReachable { return lhs.isReachable }
+            return lhs.name.localizedCaseInsensitiveCompare(rhs.name) == .orderedAscending
         }
     }
 
@@ -128,25 +138,21 @@ struct DeviceRow: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            HStack {
-                Image(systemName: deviceSymbol)
-                VStack(alignment: .leading) {
+            HStack(alignment: .center, spacing: 10) {
+                deviceIcon
+                VStack(alignment: .leading, spacing: 2) {
                     Text(device.name).font(.body.weight(.medium))
-                    Text(statusLine).font(.caption).foregroundStyle(.secondary)
+                    Text(statusLine).font(.caption2).foregroundStyle(.secondary)
                 }
                 Spacer()
-                Circle()
-                    .fill(device.isReachable ? Color.green : Color.gray)
-                    .frame(width: 8, height: 8)
+                trailingControls
             }
 
             if device.pinMismatch {
                 pinMismatchPrompt
             } else if device.incomingPairRequest {
                 pairPrompt
-            } else if device.isPaired {
-                pairedActions
-            } else {
+            } else if !device.isPaired {
                 unpairedActions
             }
 
@@ -159,12 +165,61 @@ struct DeviceRow: View {
             }
         }
         .padding(.horizontal, 12)
-        .padding(.vertical, isDropTarget ? 4 : 0)
-        .background(isDropTarget ? Color.accentColor.opacity(0.15) : Color.clear)
+        .padding(.vertical, 4)
+        .background(rowBackground)
         .animation(.easeOut(duration: 0.12), value: isDropTarget)
-        // Accept file drops only on devices we can actually send to.
         .onDrop(of: [.fileURL], isTargeted: device.isPaired && device.isReachable ? $isDropTarget : nil) { providers in
             handleDrop(providers: providers)
+        }
+    }
+
+    private var deviceIcon: some View {
+        ZStack {
+            Circle()
+                .fill(.tint.opacity(0.15))
+                .frame(width: 32, height: 32)
+            Image(systemName: deviceSymbol)
+                .font(.system(size: 16))
+                .foregroundStyle(.tint)
+        }
+    }
+
+    @ViewBuilder
+    private var trailingControls: some View {
+        if device.isPaired, device.isReachable, !device.pinMismatch, !device.incomingPairRequest {
+            HStack(spacing: 4) {
+                Button("Send") { presentFilePicker() }
+                    .controlSize(.small)
+                pairedOverflowMenu
+            }
+        } else {
+            Circle()
+                .fill(device.isReachable ? Color.green : Color.gray)
+                .frame(width: 8, height: 8)
+        }
+    }
+
+    private var pairedOverflowMenu: some View {
+        Menu {
+            Button("Ping") { PingPlugin.send(to: device) }
+            Button("Push Clipboard") { ClipboardPlugin.pushClipboard(to: device) }
+            Button("Find My Phone") { FindMyPhonePlugin.ring(device) }
+            Divider()
+            Button("Unpair", role: .destructive) { DeviceManager.shared.unpair(device) }
+        } label: {
+            Image(systemName: "ellipsis.circle")
+        }
+        .menuStyle(.borderlessButton)
+        .frame(width: 22)
+    }
+
+    @ViewBuilder
+    private var rowBackground: some View {
+        if isDropTarget {
+            RoundedRectangle(cornerRadius: 6)
+                .fill(Color.accentColor.opacity(0.18))
+        } else {
+            Color.clear
         }
     }
 
@@ -357,21 +412,6 @@ struct DeviceRow: View {
                 }
             }
         }
-    }
-
-    private var pairedActions: some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: 6) {
-                Button("Ping") { PingPlugin.send(to: device) }
-                Button("Clipboard") { ClipboardPlugin.pushClipboard(to: device) }
-                Button("Find") { FindMyPhonePlugin.ring(device) }
-                Button("Send File…") { presentFilePicker() }
-                Spacer()
-                Button("Unpair") { DeviceManager.shared.unpair(device) }
-                    .foregroundStyle(.red)
-            }
-        }
-        .controlSize(.small)
     }
 
     private func presentFilePicker() {
