@@ -104,6 +104,12 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             direction: .outgoing,
             totalBytes: size
         )
+        // Both the handler's onError and the defensive timeout converge on
+        // donePromise (via tryFail), so `finished.whenFailure` is the single
+        // path that fires on any terminal failure. Have the per-callback
+        // closures log only — terminal TransferStore/Notifier work happens
+        // exactly once on the future to avoid duplicate "Send failed"
+        // banners that the previous structure produced.
         let (port, finished) = PayloadTransport.startSender(
             fileURL: url,
             peerDeviceId: device.id,
@@ -114,32 +120,26 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             },
             onComplete: {
                 Log.plugin.info("Sent \(filename, privacy: .public) to \(deviceName, privacy: .public)")
-                Task { @MainActor in
-                    TransferStore.shared.complete(id: transferId, success: true)
-                    await Notifier.show(title: "Sent to \(deviceName)", body: filename)
-                }
             },
             onError: { err in
                 Log.plugin.error("Send failed: \(err.localizedDescription, privacy: .public)")
-                Task { @MainActor in
-                    TransferStore.shared.complete(id: transferId, success: false, error: err.localizedDescription)
-                    await Notifier.show(title: "Send failed", body: "\(filename): \(err.localizedDescription)")
-                }
             }
         )
-        // Receiver-never-connected timeout fails `finished` directly without
-        // firing the handler's onError, which would otherwise be the only
-        // path to TransferStore.complete. Observe the future so the UI never
-        // gets stuck on an in-flight transfer that already died upstream.
+        finished.whenSuccess { _ in
+            Task { @MainActor in
+                TransferStore.shared.complete(id: transferId, success: true)
+                await Notifier.show(title: "Sent to \(deviceName)", body: filename)
+            }
+        }
         finished.whenFailure { err in
             Task { @MainActor in
-                guard TransferStore.shared.active.contains(where: { $0.id == transferId }) else { return }
                 TransferStore.shared.complete(id: transferId, success: false, error: err.localizedDescription)
                 await Notifier.show(title: "Send failed", body: "\(filename): \(err.localizedDescription)")
             }
         }
         guard port != 0 else {
-            // Listener bind failed — TransferStore already marked failed via onError above.
+            // Listener bind failed — finished.whenFailure already covers the
+            // user-visible TransferStore + Notifier work above.
             return
         }
 
