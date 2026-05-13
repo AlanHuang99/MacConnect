@@ -222,6 +222,115 @@ crash on double-fulfil. Guard each site with a once-and-only flag.
 - Verification: `swift build` PASS.
 - Self-score: 3 / 3.
 
+## Milestone C — UX overhaul
+
+### Task C1 — Fingerprint on pair prompt + Copy button (5 pts)
+
+**Restatement.** Brief asks for the peer's SHA-256 on the incoming pair
+Accept/Reject prompt and a Copy button on the displayed fingerprints.
+
+**Implementation.**
+- Files changed: `Sources/MacConnectApp/StatusView.swift`
+- `pairPrompt` now reads `CertificateService.fingerprint(forTrustedDeviceId:)`
+  (cert is already on disk by the time the pair packet arrives — TOFU stored
+  it during the TLS handshake) and displays it under a "Verify this matches"
+  caption.
+- Shared `fingerprintRow(_:highlight:)` helper renders the colon-grouped hex
+  in `.system(.caption2, design: .monospaced)` with a borderless Copy button
+  that writes to `NSPasteboard.general`. Re-used by the pin-mismatch
+  fingerprint diff.
+- Self-score: 5 / 5.
+
+### Task C10 — Keyboard shortcuts + empty-state checklist + About (2 pts)
+
+**Implementation.**
+- `StatusView`: ⌘R refresh, ⌘, settings, ⌘Q quit via `.keyboardShortcut` on
+  the existing buttons. ⌘W intentionally not bound — `NSPopover.transient`
+  already closes on outside click and there's no key window to bind to.
+- Empty state: prose blurb replaced with a four-item checklist matching the
+  actual things users get wrong (KDE Connect running, same Wi-Fi, local
+  network permission, AP isolation).
+- `SettingsView`: new "About" section with version + build (from
+  `Bundle.main.infoDictionary`) + a GitHub link.
+- Self-score: 2 / 2.
+
+### Task C3 — Drag-and-drop file send (4 pts)
+
+**Implementation.**
+- `Sources/MacConnectApp/StatusView.swift` — `DeviceRow` gains
+  `.onDrop(of: [.fileURL], isTargeted: ..., perform: handleDrop)`. Drops
+  only register when the device is paired AND reachable. The row gets a
+  subtle accent-tinted background while a drag hovers over it. Multi-file
+  drops iterate the providers and call `SharePlugin.sendFile` per item.
+- `UniformTypeIdentifiers` import for `UTType.fileURL`.
+- Self-score: 4 / 4.
+
+### Task C2 — File transfer progress UI (5 pts)
+
+**Implementation.**
+- New `Sources/MacConnectCore/Plugin/TransferStore.swift` — MainActor
+  ObservableObject. `active` and `recent` arrays. `Transfer` records direction
+  (incoming / outgoing), filename, totals, started/ended timestamps, state
+  (`inProgress` | `completed` | `failed(reason)`).
+- Persistence: `recent` is last-20 only, encoded via a JSON-codable mirror
+  (`PersistedTransfer`) to UserDefaults, reloaded in `init`.
+- `Sources/MacConnectCore/Network/PayloadTransport.swift` — `startSender`
+  and `startReceiver` gained optional `onProgress: (Int64) -> Void`
+  callbacks. Sender fires after each chunk write completes; receiver fires
+  after each disk-write hop-back to the event loop. Existing call sites in
+  `SharePlugin` wire begin / progress / complete to `TransferStore`.
+- `Sources/MacConnectApp/StatusView.swift` — `DeviceRow` observes
+  `TransferStore.shared` and renders a linear `ProgressView` with bytes
+  counter + arrow icon per in-flight transfer.
+- `Sources/MacConnectApp/SettingsView.swift` — "Recent transfers" section
+  shows the persisted list with direction icon, file name, peer name,
+  size, and (if failed) error message.
+- Self-score: 5 / 5.
+
+### Task C6 — MPRIS now-playing tile (5 pts)
+
+**Implementation.**
+- New `Sources/MacConnectCore/Plugin/MprisStore.swift` — MainActor
+  ObservableObject. Per-device `State` with player name, title/artist/album,
+  isPlaying, can-{play,pause,next,prev}, optional length/position/volume.
+- `MprisPlugin.handle` (previously a `TODO`) now parses the packet body
+  into the store. New `requestNowPlaying`, `next`, `previous` action
+  methods alongside the existing `playPause`. Actions include the cached
+  `player` field so multi-player peers route to the right MPRIS instance.
+- `StatusView`:
+  - On `.onAppear`, requests now-playing from every paired-and-online peer
+    so the tile isn't blank on first open.
+  - `mprisTile` renders title — artist in caption-weight-medium, player
+    name in secondary caption2, and prev/playpause/next buttons that
+    auto-disable when the peer says the action isn't supported.
+- Self-score: 5 / 5.
+
+### Task C9 — Refresh popover visual design (4 pts)
+
+**Restatement.** Tinted device icon, name in body-weight medium, status in
+caption2, paired-above-unpaired ordering, primary right-side Send button
+plus overflow menu, hover/drop background.
+
+**Implementation.**
+- `Sources/MacConnectApp/StatusView.swift`:
+  - `deviceIcon`: 32 pt circle tinted with `.tint.opacity(0.15)` + 16 pt SF
+    Symbol in `.tint`.
+  - `trailingControls`: when paired+online, a small "Send" button + an
+    `ellipsis.circle` overflow `Menu` containing Ping / Push Clipboard /
+    Find My Phone / Unpair (destructive role). Otherwise the existing
+    green/grey status dot.
+  - `sortedDevices`: paired devices first, then by reachability, then
+    name. The previous flat alphabetical sort buried frequently-used peers
+    among one-off discoveries.
+  - Old multi-button `pairedActions` row removed; its functionality now
+    lives entirely in `trailingControls` and the overflow menu.
+- "Material backgrounds with smoother corners" partially adopted: the
+  drag-over background uses `RoundedRectangle(cornerRadius: 6)` with
+  accent tint. Full `.regularMaterial` background per row would compete
+  with the popover's own material and was not pursued; calling that a
+  deviation rather than a full implementation.
+- Self-score: 3 / 4.
+
 ## Milestone B — Performance pass
 
 ### Task B1 + B5 — PayloadReceiver writes off event loop, no-alloc reads (6 + 2 pts)
