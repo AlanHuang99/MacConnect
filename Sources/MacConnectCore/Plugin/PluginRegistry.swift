@@ -66,7 +66,11 @@ public final class PluginRegistry: @unchecked Sendable {
 
     @MainActor
     public func dispatch(_ packet: NetworkPacket, from device: Device) async {
+        let deviceId = device.id
         for p in enabledPlugins where p.incomingCapabilities.contains(packet.type) {
+            // Layer per-device overrides on top of the global enable
+            // check that `enabledPlugins` already applies.
+            guard Settings.shared.isPluginEnabled(p.identifier, forDevice: deviceId) else { continue }
             await p.handle(packet: packet, from: device)
         }
     }

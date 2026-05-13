@@ -63,6 +63,7 @@ public final class DeviceManager: ObservableObject {
 
     public func unpair(_ device: Device) {
         Settings.shared.unmarkTrusted(device.id)
+        Settings.shared.clearPerDevicePluginOverrides(forDevice: device.id)
         CertificateService.shared.deleteRemoteCert(deviceId: device.id)
         device.isPaired = false
         device.pinMismatch = false
