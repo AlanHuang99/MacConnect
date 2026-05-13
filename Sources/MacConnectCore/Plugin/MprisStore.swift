@@ -62,8 +62,19 @@ public final class MprisStore: ObservableObject {
             // ping that confirms the plugin is wired without changing state.
             return
         }
-        var state = states[deviceId] ?? State(player: player)
-        state.player = player
+        // When the peer switches to a different player (e.g. closed
+        // Spotify, opened VLC), KDE Connect can send subsequent updates
+        // that omit fields the new player doesn't yet have. Without
+        // resetting metadata we'd render the previous player's title on
+        // top of the new player's controls. Drop the stale fields when
+        // the player identity changes; only the per-field if-let updates
+        // below restore them when the packet actually carries the data.
+        var state: State
+        if let existing = states[deviceId], existing.player == player {
+            state = existing
+        } else {
+            state = State(player: player)
+        }
         if let title = packet.body["title"]?.stringValue { state.title = title }
         if let artist = packet.body["artist"]?.stringValue { state.artist = artist }
         if let album = packet.body["album"]?.stringValue { state.album = album }
@@ -76,6 +87,22 @@ public final class MprisStore: ObservableObject {
         if let length = packet.body["length"]?.intValue { state.lengthMs = length }
         if let pos = packet.body["pos"]?.intValue { state.positionMs = pos }
         states[deviceId] = state
+    }
+
+    /// Process a player-list-only update. If the peer's announced player
+    /// set no longer contains the player we cached (e.g. the user closed
+    /// the music app), drop the cached state so the UI doesn't keep
+    /// targeting a player that doesn't exist any more. Returns the list
+    /// so callers can fire per-player nowPlaying requests.
+    @discardableResult
+    public func applyPlayerList(deviceId: String, players: [String]) -> [String] {
+        if let existing = states[deviceId], !players.contains(existing.player) {
+            states[deviceId] = nil
+        }
+        if players.isEmpty {
+            states[deviceId] = nil
+        }
+        return players
     }
 
     public func state(for deviceId: String) -> State? {
