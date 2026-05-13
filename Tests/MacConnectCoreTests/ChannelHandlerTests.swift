@@ -34,12 +34,19 @@ final class ChannelHandlerTests: XCTestCase {
         try super.tearDownWithError()
     }
 
+    /// Class wrapper so the test's `@Sendable` `onIdentity` closure can
+    /// store the parsed identity without mutating a captured var (which
+    /// strict-concurrency rejects). Reference write to the class is fine.
+    final class IdentityCapture: @unchecked Sendable {
+        var value: IdentityPayload?
+    }
+
     func testInboundIdentityIsParsedAndForwarded() throws {
-        var received: IdentityPayload?
+        let received = IdentityCapture()
         let handler = KDEConnectChannelHandler(
             role: .inbound,
             sslContext: sslContext,
-            onIdentity: { id, _ in received = id },
+            onIdentity: { id, _ in received.value = id },
             onPacket: { _ in },
             onSecured: { },
             onClose: { _ in }
@@ -65,8 +72,8 @@ final class ChannelHandlerTests: XCTestCase {
         // are pre-TLS: the identity callback fired with the right data.
         _ = try? channel.writeInbound(buf)
 
-        XCTAssertEqual(received?.deviceId, "peer_xyz")
-        XCTAssertEqual(received?.deviceName, "Peer XYZ")
+        XCTAssertEqual(received.value?.deviceId, "peer_xyz")
+        XCTAssertEqual(received.value?.deviceName, "Peer XYZ")
     }
 
     func testIdentityOverflowClosesChannel() throws {
