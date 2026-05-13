@@ -292,11 +292,15 @@ struct DeviceRow: View {
     private func handleDrop(providers: [NSItemProvider]) -> Bool {
         guard device.isPaired, device.isReachable else { return false }
         var accepted = false
-        for provider in providers where provider.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) {
+        for provider in providers where provider.canLoadObject(ofClass: URL.self) {
             accepted = true
-            provider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
-                guard let data,
-                      let url = URL(dataRepresentation: data, relativeTo: nil, isAbsolute: true) else { return }
+            // URL conforms to NSItemProviderReading on macOS, which handles
+            // both single-file drops and folder/archive payloads correctly.
+            // loadDataRepresentation alone would silently no-op on payloads
+            // that arrive as a zip archive (Finder folder drag) — accepted
+            // would be true but no transfer would ever start.
+            _ = provider.loadObject(ofClass: URL.self) { url, _ in
+                guard let url else { return }
                 Task { @MainActor in
                     SharePlugin.sendFile(url, to: device)
                 }
