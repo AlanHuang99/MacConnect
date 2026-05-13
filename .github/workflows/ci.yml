@@ -49,3 +49,21 @@ jobs:
           test -f build/MacConnect.app/Contents/MacOS/MacConnect
           test -f build/MacConnect.app/Contents/Info.plist
           plutil -lint build/MacConnect.app/Contents/Info.plist
+
+  lint:
+    name: Lint
+    runs-on: macos-14
+    continue-on-error: true
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install tools
+        run: |
+          brew install swiftlint swiftformat
+
+      - name: SwiftLint
+        run: swiftlint lint --strict --reporter github-actions-logging
+
+      - name: SwiftFormat (lint mode)
+        run: swiftformat --lint .
