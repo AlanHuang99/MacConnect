@@ -58,12 +58,17 @@ public final class LanLinkProvider: @unchecked Sendable {
 
         try startUDPListener()
         startMDNSBrowser()
-        openBroadcastSocket()
+        // broadcastFD is owned by `queue`; open it from there so the long-
+        // lived socket has a single confinement point.
+        queue.sync { self.openBroadcastSocketOnQueue() }
         startBroadcastTimer()
         broadcastIdentity()
     }
 
-    private func openBroadcastSocket() {
+    /// Open the long-lived UDP broadcast socket. MUST run on `queue` —
+    /// `broadcastFD` is owned by that queue and is racy if read or written
+    /// from anywhere else.
+    private func openBroadcastSocketOnQueue() {
         let fd = socket(AF_INET, SOCK_DGRAM, 0)
         guard fd >= 0 else {
             Log.net.error("socket() for broadcast failed errno=\(errno, privacy: .public)")
@@ -82,9 +87,14 @@ public final class LanLinkProvider: @unchecked Sendable {
         udpListener = nil
         mdnsBrowser?.cancel()
         mdnsBrowser = nil
-        if broadcastFD >= 0 {
-            close(broadcastFD)
-            broadcastFD = -1
+        // Close the broadcast socket on its owning queue so a concurrent
+        // broadcastIdentity tick can't sendto() a descriptor that was just
+        // closed (or already recycled for another resource).
+        queue.sync {
+            if self.broadcastFD >= 0 {
+                close(self.broadcastFD)
+                self.broadcastFD = -1
+            }
         }
 
         // Snapshot active links under the lock then close OUTSIDE it. We
@@ -461,13 +471,22 @@ public final class LanLinkProvider: @unchecked Sendable {
     // MARK: - UDP broadcast
 
     public func broadcastIdentity() {
+        // broadcastFD is owned by `queue` (see openBroadcastSocketOnQueue /
+        // stop). Bounce here so callers from any thread (refresh from the
+        // main actor, the timer event handler from the queue itself, the
+        // initial fire from start) all converge on the same confinement
+        // point.
+        queue.async { self.broadcastIdentityOnQueue() }
+    }
+
+    private func broadcastIdentityOnQueue() {
         guard serverChannel != nil else { return }
         // Self-heal if a transient startup failure (EMFILE, etc.) left us
         // without an fd. The per-tick model used to recover automatically;
         // a long-lived socket must do this explicitly or peer discovery
         // stays permanently dead for the run.
         if broadcastFD < 0 {
-            openBroadcastSocket()
+            openBroadcastSocketOnQueue()
             guard broadcastFD >= 0 else { return }
         }
         let identity = Settings.shared.ownIdentity(tcpPort: Int(tcpPort))
