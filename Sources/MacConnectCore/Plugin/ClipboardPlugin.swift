@@ -58,15 +58,47 @@ public final class ClipboardPlugin: Plugin, @unchecked Sendable {
 
     @MainActor
     public static func pushClipboard(to device: Device) {
-        guard let s = NSPasteboard.general.string(forType: .string), !s.isEmpty else {
-            Log.plugin.notice("Clipboard empty; nothing to push")
+        if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty {
+            device.send(NetworkPacket(
+                type: PacketType.clipboard,
+                body: ["content": .string(s)]
+            ))
             return
         }
-        let packet = NetworkPacket(
-            type: PacketType.clipboard,
-            body: ["content": .string(s)]
-        )
-        device.send(packet)
+        // No text — try an image. KDE Connect's protocol doesn't carry
+        // binary clipboard data inline, so we send it as a `clipboard.png`
+        // file payload over the same share channel files use. The peer
+        // receives it as a file in Downloads; this is the same affordance
+        // KDE Connect Linux uses for non-text pasteboard content.
+        if let image = NSImage(pasteboard: NSPasteboard.general) {
+            sendClipboardImage(image, to: device)
+            return
+        }
+        Log.plugin.notice("Clipboard empty / unsupported; nothing to push")
+    }
+
+    @MainActor
+    private static func sendClipboardImage(_ image: NSImage, to device: Device) {
+        guard let tiffData = image.tiffRepresentation,
+              let bitmap = NSBitmapImageRep(data: tiffData),
+              let pngData = bitmap.representation(using: .png, properties: [:]) else {
+            Log.plugin.error("Could not encode clipboard image as PNG")
+            return
+        }
+        // Write to a process-unique temp file so concurrent pushes don't
+        // clobber each other. Caller's responsibility to keep the file
+        // around long enough for SharePlugin to read it; PayloadSender
+        // does its own retain.
+        let tmpURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("macconnect-clipboard-\(UUID().uuidString).png")
+        do {
+            try pngData.write(to: tmpURL)
+        } catch {
+            Log.plugin.error("Could not write clipboard image to temp: \(error.localizedDescription, privacy: .public)")
+            return
+        }
+        Log.plugin.info("Pushing clipboard image (\(pngData.count, privacy: .public) bytes) to \(device.id, privacy: .public)")
+        SharePlugin.sendFile(tmpURL, to: device)
     }
 }
 
