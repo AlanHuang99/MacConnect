@@ -73,6 +73,11 @@ public final class Settings: ObservableObject, @unchecked Sendable {
         get { Set(defaults.stringArray(forKey: ud_disabledPlugins) ?? []) }
         set {
             defaults.set(Array(newValue), forKey: ud_disabledPlugins)
+            // Capability lists in PluginRegistry derive from this set;
+            // invalidate at the underlying setter so any code path that
+            // mutates disabledPluginIds (not just setPluginEnabled) keeps
+            // identity broadcasts in sync with the new state.
+            PluginRegistry.shared.invalidateCapabilityCache()
             DispatchQueue.main.async { self.objectWillChange.send() }
         }
     }
@@ -84,6 +89,7 @@ public final class Settings: ObservableObject, @unchecked Sendable {
     public func setPluginEnabled(_ pluginId: String, _ enabled: Bool) {
         var s = disabledPluginIds
         if enabled { s.remove(pluginId) } else { s.insert(pluginId) }
+        // Cache invalidation now lives in the disabledPluginIds setter.
         disabledPluginIds = s
     }
 

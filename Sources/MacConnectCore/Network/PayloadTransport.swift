@@ -251,8 +251,27 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
     private let onComplete: @Sendable () -> Void
     private let onError: @Sendable (Error) -> Void
 
+    /// Serial queue for disk writes. The previous implementation wrote on
+    /// the event loop, blocking every other channel that shared the loop
+    /// for the duration of each FileHandle.write — a multi-GB receive
+    /// could starve clipboard pings and identity broadcasts.
+    private let writeQueue = DispatchQueue(label: "macconnect.payload.receive.write", qos: .utility)
+    /// Last in-flight write's completion future. New chunks chain off this
+    /// so disk writes stay strictly ordered.
+    private var writeChain: EventLoopFuture<Void>?
     private var bytesReceived: Int64 = 0
     private var fileHandle: FileHandle?
+    /// Pending writes (chunks copied off ByteBuffer but not yet flushed to
+    /// disk). When this exceeds `maxPendingWrites` we turn NIO's autoRead
+    /// off so a fast sender + slow disk doesn't accumulate unbounded
+    /// `Data` copies in memory; we re-enable autoRead when the count drops
+    /// back below the threshold.
+    private var pendingWrites: Int = 0
+    private var autoReadDisabled: Bool = false
+    /// Chosen to keep ≤ ~ chunkBytes × maxPendingWrites bytes (4 MB) in
+    /// flight at any one time — enough to keep the disk busy without
+    /// letting the network completely outrun it on a slow SSD.
+    private static let maxPendingWrites = 64
 
     init(
         fileURL: URL,
@@ -278,36 +297,98 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
 
     func channelRead(context: ChannelHandlerContext, data: NIOAny) {
         let buf = unwrapInboundIn(data)
-        let bytes = Array(buf.readableBytesView)
-        guard !bytes.isEmpty else { return }
-        do {
-            try fileHandle?.write(contentsOf: bytes)
-            bytesReceived += Int64(bytes.count)
-            if expectedSize > 0, bytesReceived >= expectedSize {
-                finish(context: context, success: true)
+        let len = buf.readableBytes
+        guard len > 0 else { return }
+        // Copy bytes off the ByteBuffer on the event loop (cheap, ~64 KiB).
+        // The Data is then handed to the write queue; the original buffer
+        // is free to be reused by NIO as soon as channelRead returns.
+        var data = Data(count: len)
+        buf.withUnsafeReadableBytes { src in
+            data.withUnsafeMutableBytes { dst in
+                guard let srcBase = src.baseAddress, let dstBase = dst.baseAddress else { return }
+                dstBase.copyMemory(from: srcBase, byteCount: len)
             }
-        } catch {
-            finish(context: context, success: false, error: error)
+        }
+
+        let channel = context.channel
+        let eventLoop = context.eventLoop
+        let promise = eventLoop.makePromise(of: Void.self)
+
+        // Chain this write after the previous one so the file stream stays
+        // ordered. If the queue depth is climbing past the threshold,
+        // disable autoRead so NIO stops handing us more bytes than the
+        // disk can absorb. We re-enable in the per-write completion below.
+        pendingWrites += 1
+        if pendingWrites >= Self.maxPendingWrites, !autoReadDisabled {
+            autoReadDisabled = true
+            _ = channel.setOption(ChannelOptions.autoRead, value: false)
+        }
+
+        let previous = writeChain ?? eventLoop.makeSucceededVoidFuture()
+        writeChain = promise.futureResult
+        let handle = fileHandle
+        let byteCount = len
+        let dataToWrite = data
+        previous.whenComplete { _ in
+            self.writeQueue.async {
+                do {
+                    try handle?.write(contentsOf: dataToWrite)
+                    eventLoop.execute {
+                        self.bytesReceived += Int64(byteCount)
+                        self.completeOneWrite(channel: channel)
+                        if self.expectedSize > 0, self.bytesReceived >= self.expectedSize {
+                            self.finish(on: channel, success: true)
+                        }
+                        promise.succeed(())
+                    }
+                } catch {
+                    eventLoop.execute {
+                        self.completeOneWrite(channel: channel)
+                        self.finish(on: channel, success: false, error: error)
+                        promise.succeed(()) // Chain continues so other queued writes don't deadlock.
+                    }
+                }
+            }
+        }
+    }
+
+    /// Called on the event loop after each disk write resolves. Drops the
+    /// in-flight counter and lifts the autoRead lock if the queue has
+    /// drained enough — under a small hysteresis (half of the cap) so we
+    /// don't toggle autoRead on every chunk.
+    private func completeOneWrite(channel: Channel) {
+        pendingWrites = max(0, pendingWrites - 1)
+        if autoReadDisabled, pendingWrites < Self.maxPendingWrites / 2 {
+            autoReadDisabled = false
+            _ = channel.setOption(ChannelOptions.autoRead, value: true)
+            // Kick a read explicitly; setOption alone doesn't request the
+            // next read.
+            channel.read()
         }
     }
 
     func channelInactive(context: ChannelHandlerContext) {
-        if expectedSize == 0 || bytesReceived > 0 {
-            // Variable-size or got something — treat as complete on close
-            finish(context: context, success: bytesReceived >= max(expectedSize, 0))
-        } else {
-            finish(context: context, success: false)
+        let channel = context.channel
+        // Drain any pending writes before deciding success — channelInactive
+        // can fire while bytes are still being copied to disk.
+        let pending = writeChain ?? context.eventLoop.makeSucceededVoidFuture()
+        pending.whenComplete { [self] _ in
+            if expectedSize == 0 || bytesReceived > 0 {
+                finish(on: channel, success: bytesReceived >= max(expectedSize, 0))
+            } else {
+                finish(on: channel, success: false)
+            }
         }
         context.fireChannelInactive()
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
-        finish(context: context, success: false, error: error)
+        finish(on: context.channel, success: false, error: error)
         context.close(promise: nil)
     }
 
     private var finished = false
-    private func finish(context: ChannelHandlerContext, success: Bool, error: Error? = nil) {
+    private func finish(on channel: Channel, success: Bool, error: Error? = nil) {
         guard !finished else { return }
         finished = true
         try? fileHandle?.close()

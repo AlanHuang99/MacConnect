@@ -43,6 +43,10 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
     private let role: Role
     private var state: State = .awaitingPlainIdentity
     private var readBuffer = ByteBuffer()
+    /// Bytes already scanned for `\n` since the last consume. We don't
+    /// rescan the same prefix every channelRead — small chunked reads on
+    /// large packets used to re-walk the buffer each time.
+    private var firstLFSearchedBytes: Int = 0
     private var peerDeviceId: String?
     private var peerIdentity: IdentityPayload?
 
@@ -277,10 +281,26 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
     }
 
     private func firstLF(in buf: ByteBuffer) -> Int? {
-        let bytes = buf.readableBytesView
-        for (i, b) in bytes.enumerated() where b == 0x0A {
-            return buf.readerIndex + i
+        let totalAvailable = buf.readableBytes
+        // If the buffer has shrunk since our last scan (caller consumed
+        // bytes), our cursor would over-shoot — reset.
+        if firstLFSearchedBytes > totalAvailable {
+            firstLFSearchedBytes = 0
         }
+        let bytes = buf.readableBytesView
+        var i = firstLFSearchedBytes
+        while i < totalAvailable {
+            if bytes[bytes.startIndex + i] == 0x0A {
+                // Reset for the upcoming consume; on the next firstLF
+                // call the buffer will be shorter and the prefix-check
+                // above resets cleanly anyway, but doing it explicitly
+                // makes the invariant obvious.
+                firstLFSearchedBytes = 0
+                return buf.readerIndex + i
+            }
+            i += 1
+        }
+        firstLFSearchedBytes = i
         return nil
     }
 }
