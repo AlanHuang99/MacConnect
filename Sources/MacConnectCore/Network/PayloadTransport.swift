@@ -261,6 +261,17 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
     private var writeChain: EventLoopFuture<Void>?
     private var bytesReceived: Int64 = 0
     private var fileHandle: FileHandle?
+    /// Pending writes (chunks copied off ByteBuffer but not yet flushed to
+    /// disk). When this exceeds `maxPendingWrites` we turn NIO's autoRead
+    /// off so a fast sender + slow disk doesn't accumulate unbounded
+    /// `Data` copies in memory; we re-enable autoRead when the count drops
+    /// back below the threshold.
+    private var pendingWrites: Int = 0
+    private var autoReadDisabled: Bool = false
+    /// Chosen to keep ≤ ~ chunkBytes × maxPendingWrites bytes (4 MB) in
+    /// flight at any one time — enough to keep the disk busy without
+    /// letting the network completely outrun it on a slow SSD.
+    private static let maxPendingWrites = 64
 
     init(
         fileURL: URL,
@@ -304,9 +315,15 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
         let promise = eventLoop.makePromise(of: Void.self)
 
         // Chain this write after the previous one so the file stream stays
-        // ordered. NIO's autoread keeps reading as fast as bytes arrive,
-        // but as long as the write queue catches up the disk doesn't run
-        // ahead of itself.
+        // ordered. If the queue depth is climbing past the threshold,
+        // disable autoRead so NIO stops handing us more bytes than the
+        // disk can absorb. We re-enable in the per-write completion below.
+        pendingWrites += 1
+        if pendingWrites >= Self.maxPendingWrites, !autoReadDisabled {
+            autoReadDisabled = true
+            _ = channel.setOption(ChannelOptions.autoRead, value: false)
+        }
+
         let previous = writeChain ?? eventLoop.makeSucceededVoidFuture()
         writeChain = promise.futureResult
         let handle = fileHandle
@@ -318,6 +335,7 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
                     try handle?.write(contentsOf: dataToWrite)
                     eventLoop.execute {
                         self.bytesReceived += Int64(byteCount)
+                        self.completeOneWrite(channel: channel)
                         if self.expectedSize > 0, self.bytesReceived >= self.expectedSize {
                             self.finish(on: channel, success: true)
                         }
@@ -325,11 +343,27 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
                     }
                 } catch {
                     eventLoop.execute {
+                        self.completeOneWrite(channel: channel)
                         self.finish(on: channel, success: false, error: error)
                         promise.succeed(()) // Chain continues so other queued writes don't deadlock.
                     }
                 }
             }
+        }
+    }
+
+    /// Called on the event loop after each disk write resolves. Drops the
+    /// in-flight counter and lifts the autoRead lock if the queue has
+    /// drained enough — under a small hysteresis (half of the cap) so we
+    /// don't toggle autoRead on every chunk.
+    private func completeOneWrite(channel: Channel) {
+        pendingWrites = max(0, pendingWrites - 1)
+        if autoReadDisabled, pendingWrites < Self.maxPendingWrites / 2 {
+            autoReadDisabled = false
+            _ = channel.setOption(ChannelOptions.autoRead, value: true)
+            // Kick a read explicitly; setOption alone doesn't request the
+            // next read.
+            channel.read()
         }
     }
 
