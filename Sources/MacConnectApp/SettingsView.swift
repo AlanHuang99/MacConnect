@@ -4,6 +4,7 @@ import MacConnectCore
 struct SettingsView: View {
     @Binding var isPresented: Bool
     @ObservedObject var settings: MacConnectCore.Settings = .shared
+    @ObservedObject var transfers: TransferStore = .shared
     @State private var nameDraft: String = MacConnectCore.Settings.shared.deviceName
     @State private var loginItemError: String?
 
@@ -86,11 +87,91 @@ struct SettingsView: View {
                             }
                         }
                     }
+
+                    section("Recent transfers") {
+                        if transfers.recent.isEmpty {
+                            Text("No transfers yet.")
+                                .font(.caption).foregroundStyle(.secondary)
+                        } else {
+                            ForEach(transfers.recent) { transfer in
+                                recentTransferRow(transfer)
+                            }
+                        }
+                    }
+
+                    section("About") {
+                        VStack(alignment: .leading, spacing: 4) {
+                            labelValue("Version", Self.appVersion)
+                            labelValue("Build", Self.appBuild)
+                            HStack {
+                                Text("Source").font(.caption).foregroundStyle(.secondary)
+                                Spacer()
+                                Link("github.com/AlanHuang99/MacConnect",
+                                     destination: URL(string: "https://github.com/AlanHuang99/MacConnect")!)
+                                    .font(.caption)
+                            }
+                        }
+                    }
                 }
                 .padding(12)
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+    }
+
+    @ViewBuilder
+    private func recentTransferRow(_ transfer: TransferStore.Transfer) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Image(systemName: icon(for: transfer))
+                .font(.caption)
+                .foregroundStyle(color(for: transfer))
+            VStack(alignment: .leading, spacing: 1) {
+                Text(transfer.filename)
+                    .font(.caption)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Text("\(transfer.direction == .incoming ? "From" : "To") \(transfer.deviceName) · \(Self.formatBytes(transfer.totalBytes))")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+                if case .failed(let reason) = transfer.state {
+                    Text(reason)
+                        .font(.caption2)
+                        .foregroundStyle(.red)
+                        .lineLimit(1)
+                }
+            }
+            Spacer()
+        }
+    }
+
+    private func icon(for transfer: TransferStore.Transfer) -> String {
+        switch transfer.state {
+        case .inProgress: return "arrow.left.arrow.right.circle"
+        case .completed:  return transfer.direction == .incoming ? "arrow.down.circle.fill" : "arrow.up.circle.fill"
+        case .failed:     return "exclamationmark.triangle.fill"
+        }
+    }
+
+    private func color(for transfer: TransferStore.Transfer) -> Color {
+        switch transfer.state {
+        case .inProgress: return .secondary
+        case .completed:  return .accentColor
+        case .failed:     return .red
+        }
+    }
+
+    private static func formatBytes(_ bytes: Int64) -> String {
+        let formatter = ByteCountFormatter()
+        formatter.allowedUnits = [.useKB, .useMB, .useGB]
+        formatter.countStyle = .file
+        return formatter.string(fromByteCount: bytes)
+    }
+
+    private static var appVersion: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "dev"
+    }
+    private static var appBuild: String {
+        Bundle.main.object(forInfoDictionaryKey: "CFBundleVersion") as? String ?? "dev"
     }
 
     @ViewBuilder

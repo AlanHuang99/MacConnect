@@ -52,20 +52,35 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
         Log.plugin.info("Receiving file '\(safeName, privacy: .public)' (\(payloadSize, privacy: .public) bytes) from \(device.name, privacy: .public) via port \(port, privacy: .public)")
 
         let deviceName = device.name
+        let deviceId = device.id
+        let transferId = TransferStore.shared.begin(
+            deviceId: deviceId,
+            deviceName: deviceName,
+            filename: safeName,
+            direction: .incoming,
+            totalBytes: payloadSize
+        )
         PayloadTransport.startReceiver(
             host: host,
             port: UInt16(port),
             fileURL: target,
             expectedSize: payloadSize,
             peerDeviceId: device.id,
+            onProgress: { bytes in
+                Task { @MainActor in
+                    TransferStore.shared.updateProgress(id: transferId, transferred: bytes)
+                }
+            },
             onComplete: {
                 Task { @MainActor in
+                    TransferStore.shared.complete(id: transferId, success: true)
                     await Notifier.show(title: "File from \(deviceName)", body: target.lastPathComponent)
                     NSWorkspace.shared.activateFileViewerSelecting([target])
                 }
             },
             onError: { err in
                 Task { @MainActor in
+                    TransferStore.shared.complete(id: transferId, success: false, error: err.localizedDescription)
                     await Notifier.show(title: "File transfer failed",
                                         body: "\(safeName): \(err.localizedDescription)")
                 }
@@ -80,24 +95,53 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
         let lastModified = ((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970).map { Int64($0 * 1000) } ?? 0
 
         let deviceName = device.name
+        let deviceId = device.id
         let filename = url.lastPathComponent
-        let (port, _) = PayloadTransport.startSender(
+        let transferId = TransferStore.shared.begin(
+            deviceId: deviceId,
+            deviceName: deviceName,
+            filename: filename,
+            direction: .outgoing,
+            totalBytes: size
+        )
+        // Both the handler's onError and the defensive timeout converge on
+        // donePromise (via tryFail), so `finished.whenFailure` is the single
+        // path that fires on any terminal failure. Have the per-callback
+        // closures log only — terminal TransferStore/Notifier work happens
+        // exactly once on the future to avoid duplicate "Send failed"
+        // banners that the previous structure produced.
+        let (port, finished) = PayloadTransport.startSender(
             fileURL: url,
             peerDeviceId: device.id,
+            onProgress: { bytes in
+                Task { @MainActor in
+                    TransferStore.shared.updateProgress(id: transferId, transferred: bytes)
+                }
+            },
             onComplete: {
                 Log.plugin.info("Sent \(filename, privacy: .public) to \(deviceName, privacy: .public)")
-                Task { @MainActor in
-                    await Notifier.show(title: "Sent to \(deviceName)", body: filename)
-                }
             },
             onError: { err in
                 Log.plugin.error("Send failed: \(err.localizedDescription, privacy: .public)")
-                Task { @MainActor in
-                    await Notifier.show(title: "Send failed", body: "\(filename): \(err.localizedDescription)")
-                }
             }
         )
-        guard port != 0 else { return }
+        finished.whenSuccess { _ in
+            Task { @MainActor in
+                TransferStore.shared.complete(id: transferId, success: true)
+                await Notifier.show(title: "Sent to \(deviceName)", body: filename)
+            }
+        }
+        finished.whenFailure { err in
+            Task { @MainActor in
+                TransferStore.shared.complete(id: transferId, success: false, error: err.localizedDescription)
+                await Notifier.show(title: "Send failed", body: "\(filename): \(err.localizedDescription)")
+            }
+        }
+        guard port != 0 else {
+            // Listener bind failed — finished.whenFailure already covers the
+            // user-visible TransferStore + Notifier work above.
+            return
+        }
 
         let body: [String: AnyJSON] = [
             "filename": .string(filename),
