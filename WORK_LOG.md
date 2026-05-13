@@ -331,6 +331,106 @@ plus overflow menu, hover/drop background.
   deviation rather than a full implementation.
 - Self-score: 3 / 4.
 
+## Bonus tasks
+
+### Bonus-1 — Battery plugin (5 pts)
+
+**Implementation.**
+- New `Sources/MacConnectCore/Plugin/BatteryPlugin.swift` parses
+  `kdeconnect.battery` (currentCharge, isCharging, thresholdEvent) into a
+  `BatteryStore` (MainActor ObservableObject) keyed by deviceId.
+- Plugin advertises `kdeconnect.battery.request` as outgoing capability;
+  `BatteryPlugin.requestUpdate(from:)` static helper.
+- `AppDelegate` registers the plugin.
+- `StatusView.onAppear` requests battery state for all paired-and-online
+  peers (alongside MPRIS) so the indicator isn't blank on first view.
+- `DeviceRow` status line now includes `<percent>%` and a `⚡` when
+  charging, gated on `device.isReachable` so a stale cache value never
+  shows for an offline peer.
+- Self-score: 5 / 5.
+
+### Bonus-2 — SwiftLint + SwiftFormat (3 pts)
+
+**Implementation.**
+- `.swiftlint.yml` and `.swiftformat` in repo root.
+- CI gains a `Lint` job that installs both via Homebrew and runs them.
+- `continue-on-error: true` on the new job — surfaces issues without
+  blocking builds until the rules have been tuned against the codebase.
+  Reviewer can flip that off once the baseline run has been triaged.
+- Self-score: 2 / 3 — local verification unavailable (no `swiftlint` on
+  the agent machine), so the rule set is unvalidated. CI run will be
+  the first ground-truth pass.
+
+### Bonus-3 — swift-certificates migration (5 pts)
+
+**Deferred.** This is an "open question" in the project's own ROADMAP
+("Whether to replace `/usr/bin/openssl` shell-out with `swift-certificates`")
+because the migration carries real interop risk: KDE Connect peers
+expect specific cert structure (subject DN format, RSA-2048, SHA-256
+signing) and an off-by-one in the SubjectPublicKeyInfo encoding would
+silently break TOFU. The "is this safe" answer needs a Mac-Android
+round-trip pair under each variant, which is a manual verification step
+the agent sandbox cannot run.
+
+**Proposed scope for when this lands** (≈ 1 day of work):
+- Add `apple/swift-certificates` to Package.swift.
+- Rewrite `CertificateService.generateIdentity` to use
+  `Certificate.PrivateKey.makeRSA(keySize: ._2048)` +
+  `Certificate.Builder` with subject `O=KDE, OU=KDE Connect, CN=<deviceId>`,
+  10-year validity, SHA-256 signing.
+- Serialize cert as PEM into `certURL`, key as PEM into `keyURL` so the
+  existing NIOSSL load path is unchanged.
+- Compare DER output to the openssl-produced version with `openssl x509
+  -in cert.pem -text -noout` side-by-side.
+- Pair against a real KDE Connect Android peer under both old and new
+  cert before merging.
+- Self-score: 0 / 5 (intentionally deferred).
+
+### Bonus-4 — Localization scaffolding (3 pts)
+
+**Implementation.**
+- `Sources/MacConnectApp/Resources/Localizable.xcstrings` — JSON String
+  Catalog with en baseline for the most common user-facing strings
+  (action buttons, section titles, empty states).
+- `Package.swift` declares `resources: [.process("Resources")]` on the
+  app target; SwiftPM generates `Bundle.module` and
+  `MacConnect_MacConnectApp.bundle` at build time.
+- `scripts/build-app.sh` copies the resource bundle into
+  `MacConnect.app/Contents/Resources/` so `Bundle.module` lookups resolve
+  inside the assembled .app.
+- Three `Text()` call sites converted to `Text(_:bundle: .module)` as a
+  worked example. Translators can duplicate xcstrings entries with
+  additional `localizations` blocks per language.
+- Self-score: 3 / 3.
+
+### Bonus-5 — Per-device plugin overrides (2 pts)
+
+**Implementation.**
+- `Settings.disabledPluginsByDevice: [String: Set<String>]` layered on
+  top of `disabledPluginIds`. `isPluginEnabled(_:forDevice:)` and
+  `setPluginEnabled(_:_:forDevice:)`. Empty per-device sets pruned to
+  keep the UserDefaults backing compact.
+- `PluginRegistry.dispatch` consults per-device check before invoking
+  `handle`. Outgoing capability advertisement stays whole-device only —
+  peers still see us as capable; we just silently drop inbound packets.
+- `DeviceManager.unpair` + the Settings "Forget" button clear the
+  overrides for that peer.
+- `SettingsView` trusted-device row gains a `DisclosureGroup` with
+  per-plugin toggles. Each toggle disables when the plugin is globally
+  off — no per-device override of a globally-off plugin.
+- Self-score: 2 / 2.
+
+### Bonus-6 — Clipboard image / non-text type support (2 pts)
+
+**Implementation.**
+- `ClipboardPlugin.pushClipboard(to:)` falls back to `NSImage(pasteboard:
+  .general)` when no text is on the pasteboard. Encodes the image as PNG
+  via `NSBitmapImageRep`, writes to a process-unique temp file
+  (`macconnect-clipboard-<uuid>.png`), then routes through
+  `SharePlugin.sendFile`. Peer receives it as a normal file payload —
+  matches the affordance kdeconnect-kde uses for non-text content.
+- Self-score: 2 / 2.
+
 ## Milestone B — Performance pass
 
 ### Task B1 + B5 — PayloadReceiver writes off event loop, no-alloc reads (6 + 2 pts)
@@ -462,4 +562,24 @@ follow-up. The new tests verify the highest-risk code paths:
 - Self-score: 4 / 8 — the partial gate is honest and useful; the full
   two-provider end-to-end is not delivered. Reviewer to decide whether to
   invest the DI refactor here or carry it as a follow-up.
+
+---
+
+## Self-score totals
+
+| Milestone | Self-score | Available | Notes |
+|---|---|---|---|
+| A | 31 / 40 | 40 | Three tasks at half-credit for missing manual verification. |
+| B | 18 / 20 | 20 | B1 backpressure plumbing not implemented. |
+| C | 24 / 25 | 40 | C4/C5/C7/C8 pre-existing (≈15 pts already in tree); not re-counted. |
+| Bonus | 14 / 20 | 20 | Bonus-3 (swift-certificates) intentionally deferred. |
+
+**Caveats the reviewer should treat as TODO items:**
+- Mac↔Android round-trip ping not verified in agent sandbox. Highest-risk gap.
+- IdleStateHandler at 300 s is the deviation that needs Mac↔Mac and
+  Mac↔Android idle-overnight testing before being trusted.
+- A8 in-process smoke test is partial — full two-provider gate filed as
+  follow-up requiring a DI refactor.
+- B1 file-write throughput vs. autoread untested at large file sizes.
+- Bonus-3 not started; ROADMAP-flagged open question.
 
