@@ -217,10 +217,22 @@ struct DeviceRow: View {
             Divider()
             Button("Unpair", role: .destructive) { DeviceManager.shared.unpair(device) }
         } label: {
-            Image(systemName: "ellipsis.circle")
+            // Plain `ellipsis` rather than `ellipsis.circle` — the system
+            // Menu adds its own visual affordance (a subtle hover hit-area)
+            // and the doubled circle outline crowded the adjacent Send
+            // button on dense rows.
+            Image(systemName: "ellipsis")
+                .symbolVariant(.none)
+                .padding(.horizontal, 4)
+                .padding(.vertical, 2)
         }
         .menuStyle(.borderlessButton)
-        .frame(width: 22)
+        // Hide the default disclosure chevron — without this, SwiftUI
+        // tucks a small ⌄ next to the label which looks like a stray glyph
+        // against busy backgrounds and was the "red circle" the previous
+        // build appeared to grow.
+        .menuIndicator(.hidden)
+        .fixedSize()
     }
 
     @ViewBuilder
