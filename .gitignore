@@ -23,6 +23,10 @@ research/
 .vscode/
 .idea/
 
+# Agent / workspace state (per-developer; never shared)
+.claude/
+.context/
+
 # Generated TLS material — never commit these
 *.pem
 *.p12
