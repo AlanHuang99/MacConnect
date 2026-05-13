@@ -21,7 +21,7 @@ struct SettingsView: View {
                     .buttonStyle(.borderless)
                     Spacer()
                 }
-                Text("Settings").font(.headline)
+                Text("Settings", bundle: .module).font(.headline)
             }
             .padding(12)
             Divider()
@@ -182,6 +182,7 @@ struct SettingsView: View {
                 Spacer()
                 Button("Forget") {
                     MacConnectCore.Settings.shared.unmarkTrusted(id)
+                    MacConnectCore.Settings.shared.clearPerDevicePluginOverrides(forDevice: id)
                     CertificateService.shared.deleteRemoteCert(deviceId: id)
                     settings.objectWillChange.send()
                 }
@@ -193,7 +194,27 @@ struct SettingsView: View {
                     .foregroundStyle(.secondary)
                     .textSelection(.enabled)
             }
+            DisclosureGroup("Plugin overrides") {
+                ForEach(PluginRegistry.shared.allPlugins, id: \.identifier) { plugin in
+                    Toggle(plugin.displayName, isOn: perDevicePluginBinding(plugin.identifier, deviceId: id))
+                        .disabled(!MacConnectCore.Settings.shared.isPluginEnabled(plugin.identifier))
+                        .font(.caption)
+                }
+                Text("Overrides on top of the global setting. Disabling here silently drops inbound packets from this peer for the plugin; outgoing capabilities still advertise it.")
+                    .font(.caption2)
+                    .foregroundStyle(.secondary)
+            }
+            .font(.caption)
         }
+    }
+
+    private func perDevicePluginBinding(_ pluginId: String, deviceId: String) -> Binding<Bool> {
+        Binding(
+            get: { MacConnectCore.Settings.shared.isPluginEnabled(pluginId, forDevice: deviceId) },
+            set: { newValue in
+                MacConnectCore.Settings.shared.setPluginEnabled(pluginId, newValue, forDevice: deviceId)
+            }
+        )
     }
 
     private func pluginBinding(_ pluginId: String) -> Binding<Bool> {

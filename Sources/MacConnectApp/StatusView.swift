@@ -41,12 +41,21 @@ struct StatusView: View {
         .onAppear(perform: requestNowPlayingFromPeers)
     }
 
-    /// Ask paired-and-online peers to push their current MPRIS state so the
-    /// tile isn't blank on first popover open. Peers push subsequent updates
-    /// proactively on track / state change.
+    /// Ask paired-and-online peers to push their current MPRIS / battery
+    /// state so tiles aren't blank on first popover open. Both calls are
+    /// gated on the per-device + global plugin enable state — without that
+    /// gate we'd send unsolicited plugin traffic to peers the user
+    /// explicitly muted for those plugins, contradicting the per-device
+    /// override settings.
     private func requestNowPlayingFromPeers() {
         for device in manager.deviceList() where device.isPaired && device.isReachable {
-            MprisPlugin.requestNowPlaying(from: device)
+            let id = device.id
+            if MacConnectCore.Settings.shared.isPluginEnabled("mpris", forDevice: id) {
+                MprisPlugin.requestNowPlaying(from: device)
+            }
+            if MacConnectCore.Settings.shared.isPluginEnabled("battery", forDevice: id) {
+                BatteryPlugin.requestUpdate(from: device)
+            }
         }
     }
 
@@ -63,7 +72,7 @@ struct StatusView: View {
     private var header: some View {
         HStack {
             Image(systemName: "iphone.radiowaves.left.and.right")
-            Text("MacConnect").font(.headline)
+            Text("MacConnect", bundle: .module).font(.headline)
             Spacer()
             Button {
                 LanLinkProvider.shared.refresh()
@@ -91,7 +100,7 @@ struct StatusView: View {
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 40))
                 .foregroundStyle(.secondary)
-            Text("Searching for devices…")
+            Text("Searching for devices…", bundle: .module)
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 4) {
                 checklistItem("KDE Connect is running on the other device")
@@ -134,6 +143,7 @@ struct DeviceRow: View {
     @ObservedObject var device: Device
     @ObservedObject private var transfers = TransferStore.shared
     @ObservedObject private var mpris = MprisStore.shared
+    @ObservedObject private var battery = BatteryStore.shared
     @State private var isDropTarget: Bool = false
 
     var body: some View {
@@ -335,6 +345,19 @@ struct DeviceRow: View {
             bits.append("online")
         } else if let age = lastSeenAge {
             bits.append("last seen \(age)")
+        }
+        // Battery is only meaningful when (a) we still trust the peer
+        // (otherwise we'd be displaying cached data for an unpaired
+        // device), (b) it's currently reachable (otherwise stale), and
+        // (c) the battery plugin is actually enabled for this peer — the
+        // user can disable it globally or per-device, in which case the
+        // cache may exist from before the toggle and shouldn't be shown.
+        let id = device.id
+        if device.isPaired,
+           device.isReachable,
+           MacConnectCore.Settings.shared.isPluginEnabled("battery", forDevice: id),
+           let bat = battery.state(for: id) {
+            bits.append("\(bat.currentCharge)%\(bat.isCharging ? " ⚡" : "")")
         }
         return bits.joined(separator: " · ")
     }

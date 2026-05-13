@@ -63,6 +63,7 @@ public final class DeviceManager: ObservableObject {
 
     public func unpair(_ device: Device) {
         Settings.shared.unmarkTrusted(device.id)
+        Settings.shared.clearPerDevicePluginOverrides(forDevice: device.id)
         CertificateService.shared.deleteRemoteCert(deviceId: device.id)
         device.isPaired = false
         device.pinMismatch = false
@@ -91,6 +92,7 @@ public final class DeviceManager: ObservableObject {
     /// re-runs against its current cert.
     public func resetTrust(_ device: Device) {
         Settings.shared.unmarkTrusted(device.id)
+        Settings.shared.clearPerDevicePluginOverrides(forDevice: device.id)
         CertificateService.shared.deleteRemoteCert(deviceId: device.id)
         device.isPaired = false
         device.pinMismatch = false
@@ -117,8 +119,10 @@ public final class DeviceManager: ObservableObject {
                 device.incomingPairRequest = true
             }
         } else {
-            // Unpair / rejection
+            // Unpair / rejection — clear all trust state including per-device
+            // plugin overrides so a future re-pair starts clean.
             Settings.shared.unmarkTrusted(device.id)
+            Settings.shared.clearPerDevicePluginOverrides(forDevice: device.id)
             CertificateService.shared.deleteRemoteCert(deviceId: device.id)
             device.isPaired = false
             device.outgoingPairRequest = false
