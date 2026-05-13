@@ -41,13 +41,21 @@ struct StatusView: View {
         .onAppear(perform: requestNowPlayingFromPeers)
     }
 
-    /// Ask paired-and-online peers to push their current MPRIS state so the
-    /// tile isn't blank on first popover open. Peers push subsequent updates
-    /// proactively on track / state change.
+    /// Ask paired-and-online peers to push their current MPRIS / battery
+    /// state so tiles aren't blank on first popover open. Both calls are
+    /// gated on the per-device + global plugin enable state — without that
+    /// gate we'd send unsolicited plugin traffic to peers the user
+    /// explicitly muted for those plugins, contradicting the per-device
+    /// override settings.
     private func requestNowPlayingFromPeers() {
         for device in manager.deviceList() where device.isPaired && device.isReachable {
-            MprisPlugin.requestNowPlaying(from: device)
-            BatteryPlugin.requestUpdate(from: device)
+            let id = device.id
+            if MacConnectCore.Settings.shared.isPluginEnabled("mpris", forDevice: id) {
+                MprisPlugin.requestNowPlaying(from: device)
+            }
+            if MacConnectCore.Settings.shared.isPluginEnabled("battery", forDevice: id) {
+                BatteryPlugin.requestUpdate(from: device)
+            }
         }
     }
 

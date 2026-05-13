@@ -98,7 +98,9 @@ public final class ClipboardPlugin: Plugin, @unchecked Sendable {
             return
         }
         Log.plugin.info("Pushing clipboard image (\(pngData.count, privacy: .public) bytes) to \(device.id, privacy: .public)")
-        SharePlugin.sendFile(tmpURL, to: device)
+        // deleteAfterSend ensures /tmp doesn't accumulate
+        // macconnect-clipboard-*.png files after repeated image pushes.
+        SharePlugin.sendFile(tmpURL, to: device, deleteAfterSend: true)
     }
 }
 

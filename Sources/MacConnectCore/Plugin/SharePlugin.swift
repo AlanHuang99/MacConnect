@@ -89,7 +89,7 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
     }
 
     @MainActor
-    public static func sendFile(_ url: URL, to device: Device) {
+    public static func sendFile(_ url: URL, to device: Device, deleteAfterSend: Bool = false) {
         let attrs = try? FileManager.default.attributesOfItem(atPath: url.path)
         let size = (attrs?[.size] as? NSNumber)?.int64Value ?? 0
         let lastModified = ((attrs?[.modificationDate] as? Date)?.timeIntervalSince1970).map { Int64($0 * 1000) } ?? 0
@@ -104,12 +104,20 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             direction: .outgoing,
             totalBytes: size
         )
+        let cleanup = { @Sendable in
+            // Only the clipboard-image / drag-temp paths set deleteAfterSend.
+            // We `try?` since the file may already be gone (deleted by the
+            // OS temp cleanup, or by a separate copy somewhere).
+            if deleteAfterSend {
+                try? FileManager.default.removeItem(at: url)
+            }
+        }
         // Both the handler's onError and the defensive timeout converge on
         // donePromise (via tryFail), so `finished.whenFailure` is the single
         // path that fires on any terminal failure. Have the per-callback
-        // closures log only — terminal TransferStore/Notifier work happens
-        // exactly once on the future to avoid duplicate "Send failed"
-        // banners that the previous structure produced.
+        // closures log only — terminal TransferStore/Notifier/cleanup work
+        // happens exactly once on the future to avoid duplicate "Send
+        // failed" banners that the previous structure produced.
         let (port, finished) = PayloadTransport.startSender(
             fileURL: url,
             peerDeviceId: device.id,
@@ -126,20 +134,22 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             }
         )
         finished.whenSuccess { _ in
+            cleanup()
             Task { @MainActor in
                 TransferStore.shared.complete(id: transferId, success: true)
                 await Notifier.show(title: "Sent to \(deviceName)", body: filename)
             }
         }
         finished.whenFailure { err in
+            cleanup()
             Task { @MainActor in
                 TransferStore.shared.complete(id: transferId, success: false, error: err.localizedDescription)
                 await Notifier.show(title: "Send failed", body: "\(filename): \(err.localizedDescription)")
             }
         }
         guard port != 0 else {
-            // Listener bind failed — finished.whenFailure already covers the
-            // user-visible TransferStore + Notifier work above.
+            // Listener bind failed — finished.whenFailure (above) already
+            // covers TransferStore + Notifier + cleanup.
             return
         }
 
