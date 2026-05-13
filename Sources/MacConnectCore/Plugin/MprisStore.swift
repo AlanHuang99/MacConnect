@@ -78,6 +78,15 @@ public final class MprisStore: ObservableObject {
         if let title = packet.body["title"]?.stringValue { state.title = title }
         if let artist = packet.body["artist"]?.stringValue { state.artist = artist }
         if let album = packet.body["album"]?.stringValue { state.album = album }
+        // Some KDE Connect peers (older Android builds, certain plugins)
+        // still pack track info into a single `nowPlaying` string instead
+        // of separate `title`/`artist`. Fall back so the tile isn't blank
+        // against peers that use only the deprecated field.
+        if state.title == nil, state.artist == nil,
+           let nowPlaying = packet.body["nowPlaying"]?.stringValue,
+           !nowPlaying.isEmpty {
+            state.title = nowPlaying
+        }
         if let isPlaying = packet.body["isPlaying"]?.boolValue { state.isPlaying = isPlaying }
         if let canPlay = packet.body["canPlay"]?.boolValue { state.canPlay = canPlay }
         if let canPause = packet.body["canPause"]?.boolValue { state.canPause = canPause }
