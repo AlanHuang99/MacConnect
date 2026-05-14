@@ -25,6 +25,14 @@ public final class LanLinkProvider: @unchecked Sendable {
     private var channelToDeviceId: [ObjectIdentifier: String] = [:]
     private var linksByDeviceId: [String: LanLink] = [:]
 
+    /// Per-peer dial cooldown so a peer whose TLS handshake keeps
+    /// failing doesn't get redialed every 5 s discovery tick. Without
+    /// this, a single broken peer (e.g. an incompatible iOS build)
+    /// produces hundreds of failed handshakes per minute, eats fds /
+    /// CPU, and makes the app appear hung. See `DialCooldownTracker`
+    /// for the backoff schedule.
+    private var dialCooldown = DialCooldownTracker()
+
     /// Bonjour service type advertised + browsed for. Matches KDE Connect's
     /// canonical mDNS service name; using anything else would break
     /// interoperability with KDE Connect's mDNS-aware clients.
@@ -135,7 +143,9 @@ public final class LanLinkProvider: @unchecked Sendable {
         let stragglers = Array(linksByDeviceId.values)
         linksByDeviceId.removeAll()
         channelToDeviceId.removeAll()
+        dialCooldown.removeAll()
         linkLock.unlock()
+        // Drop the shared link reference so links don't outlive the provider.
         for link in stragglers {
             link.notifyClosed()
         }
@@ -286,6 +296,8 @@ public final class LanLinkProvider: @unchecked Sendable {
             return
         }
         link.isSecure = true
+        // Successful handshake clears any prior dial-cooldown.
+        dialCooldown.clear(deviceId: deviceId)
         linkLock.unlock()
         Log.net.info("Link secured: \(deviceId, privacy: .public)")
         Task { @MainActor in
@@ -304,10 +316,19 @@ public final class LanLinkProvider: @unchecked Sendable {
         // closing — don't disconnect the device.
         let link = linksByDeviceId[deviceId]
         let isActive = link?.activeChannel === channel
+        let wasSecure = link?.isSecure ?? false
         if isActive {
             linksByDeviceId.removeValue(forKey: deviceId)
         }
         linkLock.unlock()
+        // If the channel closed BEFORE TLS completed (peer drops the
+        // socket mid-handshake — e.g. our cert is rejected), apply a
+        // backoff so we don't dial again on the very next discovery
+        // tick. Securely-attached links that close are normal lifecycle
+        // events and don't get penalised.
+        if isActive, !wasSecure {
+            recordDialFailure(deviceId: deviceId)
+        }
         if isActive {
             link?.notifyClosed()
         }
@@ -459,11 +480,16 @@ public final class LanLinkProvider: @unchecked Sendable {
         }
         Log.net.debug("UDP identity from \(identity.deviceName, privacy: .public)")
 
-        // Avoid double-connecting if we already have a secured link
+        // Avoid double-connecting if we already have a secured link.
+        // Also honour the per-peer dial cooldown — without it a peer
+        // whose TLS handshake keeps failing gets redialed every 5 s
+        // for as long as it broadcasts.
         linkLock.lock()
         let existing = linksByDeviceId[identity.deviceId]
+        let canDial = dialCooldown.canDial(deviceId: identity.deviceId)
         linkLock.unlock()
         if let existing, existing.isSecure { return }
+        if !canDial { return }
 
         Log.net
             .info(
@@ -488,12 +514,47 @@ public final class LanLinkProvider: @unchecked Sendable {
             // For outbound, the handler already knows peer identity; register the link now.
             self?.handleIdentity(identity, channel: channel)
         }
-        future.whenFailure { err in
+        future.whenFailure { [weak self] err in
             Log.net
                 .error(
                     "Outbound connect failed to \(hostStr, privacy: .public): \(err.localizedDescription, privacy: .public)"
                 )
+            // TCP-level failure (host unreachable, refused) deserves the
+            // same backoff as a pre-TLS close — without this, an
+            // unreachable IPv6 link-local peer redials every 5 s.
+            self?.recordDialFailure(deviceId: identity.deviceId)
         }
+    }
+
+    /// Bump the per-peer dial-failure counter and push out the next
+    /// allowed dial time. Shared between the TCP-failure and pre-TLS
+    /// close paths.
+    ///
+    /// **Stale-failure guard.** Both call sites can fire after a
+    /// concurrent dial for the same peer has already secured a link:
+    /// in `handleClosed` between releasing the lock and reaching the
+    /// failure path, and in the outbound-connect `whenFailure` callback
+    /// for an older dial whose newer sibling already succeeded. If
+    /// there's a current secure link we treat this failure as stale
+    /// and skip the bump — bumping would re-introduce backoff against
+    /// a peer we just established a healthy connection to.
+    private func recordDialFailure(deviceId: String) {
+        linkLock.lock()
+        if let existing = linksByDeviceId[deviceId], existing.isSecure {
+            linkLock.unlock()
+            Log.net
+                .debug(
+                    "Skipping stale dial-failure bump for \(deviceId, privacy: .public); secure link exists"
+                )
+            return
+        }
+        dialCooldown.recordFailure(deviceId: deviceId)
+        let count = dialCooldown.failureCount(deviceId: deviceId)
+        linkLock.unlock()
+        Log.net
+            .notice(
+                "Dial failure #\(count, privacy: .public) for \(deviceId, privacy: .public); backing off"
+            )
     }
 
     // MARK: - UDP broadcast

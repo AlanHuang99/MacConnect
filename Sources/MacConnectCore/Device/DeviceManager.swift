@@ -109,13 +109,29 @@ public final class DeviceManager: ObservableObject {
     /// Called by the link layer when a pair packet arrives.
     public func didReceivePairPacket(accept: Bool, device: Device) {
         if accept {
+            // Idempotency guard. KDE Connect peers (notably the iOS
+            // app, and Android peers when a TLS handshake keeps cycling)
+            // resend pair=true while already trusted. Without this guard
+            // we'd flip incomingPairRequest=true again and re-prompt the
+            // user with "Accept?" indefinitely — the pairing-loop bug.
+            if device.isPaired {
+                Log.pair
+                    .debug("Already paired with \(device.id, privacy: .public); ignoring pair=true")
+                // Re-confirm so the peer's state catches up if it
+                // forgot the trust on its side. Cheap and idempotent.
+                device.send(PairPacketBuilder.response(accept: true))
+                device.incomingPairRequest = false
+                device.outgoingPairRequest = false
+                objectWillChange.send()
+                return
+            }
             if device.outgoingPairRequest {
-                // Peer accepted our request
+                // Peer accepted our request.
                 Settings.shared.markTrusted(device.id)
                 device.isPaired = true
                 device.outgoingPairRequest = false
             } else {
-                // Peer is requesting we pair
+                // Peer is requesting we pair.
                 device.incomingPairRequest = true
             }
         } else {

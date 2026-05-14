@@ -41,6 +41,27 @@ public final class TransferStore: ObservableObject {
     @Published public private(set) var active: [Transfer] = []
     @Published public private(set) var recent: [Transfer] = []
 
+    /// Transient confirmation surface for the popover. Set by
+    /// `complete(_:)`; auto-clears after a few seconds. Decouples
+    /// SharePlugin from the popover — when this fires, the AppDelegate
+    /// flashes the popover open if it isn't visible, and StatusView
+    /// renders a small banner. Survives the OS notification path being
+    /// denied (which silently happens on ad-hoc-signed dev builds).
+    @Published public private(set) var toast: Toast?
+
+    public enum ToastKind: Sendable { case success, failure }
+
+    public struct Toast: Equatable, Sendable, Identifiable {
+        public let id: UUID
+        public let kind: ToastKind
+        public let message: String
+        public let detail: String?
+        public let createdAt: Date
+    }
+
+    private static let toastDisplaySeconds: TimeInterval = 4
+    private var toastClearTask: Task<Void, Never>?
+
     /// Most recent 20 completed (success or failure) transfers, kept in
     /// memory and persisted to UserDefaults so the Recent Transfers list
     /// survives an app restart.
@@ -94,6 +115,62 @@ public final class TransferStore: ObservableObject {
             recent.removeLast(recent.count - Self.recentLimit)
         }
         persistRecent()
+        publishToast(for: t)
+    }
+
+    /// Manually clear the current toast (e.g. user dismissed the popover
+    /// before the auto-clear timer fired).
+    public func dismissToast() {
+        toastClearTask?.cancel()
+        toastClearTask = nil
+        toast = nil
+    }
+
+    private func publishToast(for transfer: Transfer) {
+        let kind: ToastKind
+        let message: String
+        let detail: String?
+        switch transfer.state {
+        case .completed:
+            kind = .success
+            message = transfer.direction == .outgoing
+                ? "Sent \(transfer.filename)"
+                : "Received \(transfer.filename)"
+            detail = transfer.direction == .outgoing
+                ? "to \(transfer.deviceName)"
+                : "from \(transfer.deviceName)"
+        case .failed(let reason):
+            kind = .failure
+            message = transfer.direction == .outgoing
+                ? "Send failed: \(transfer.filename)"
+                : "Receive failed: \(transfer.filename)"
+            detail = reason
+        case .inProgress:
+            // Shouldn't reach here from complete(), but keep the switch
+            // exhaustive without surfacing a misleading toast.
+            return
+        }
+        let new = Toast(
+            id: UUID(),
+            kind: kind,
+            message: message,
+            detail: detail,
+            createdAt: Date()
+        )
+        toast = new
+        // Cancel any in-flight clear task so back-to-back transfers
+        // don't get cut short by an earlier timer.
+        toastClearTask?.cancel()
+        toastClearTask = Task { [weak self] in
+            try? await Task.sleep(nanoseconds: UInt64(Self.toastDisplaySeconds * 1_000_000_000))
+            guard !Task.isCancelled else { return }
+            await MainActor.run {
+                guard let self else { return }
+                if self.toast?.id == new.id {
+                    self.toast = nil
+                }
+            }
+        }
     }
 
     /// Active transfers for a specific device — UI binds against this for
