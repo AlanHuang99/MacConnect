@@ -20,10 +20,12 @@ public final class BatteryPlugin: Plugin, @unchecked Sendable {
 
     @MainActor
     public static func requestUpdate(from device: Device) {
-        device.send(NetworkPacket(
+        if !device.send(NetworkPacket(
             type: PacketType.batteryRequest,
             body: ["request": .bool(true)]
-        ))
+        )) {
+            Log.plugin.notice("Battery request not sent to \(device.id, privacy: .public)")
+        }
     }
 }
 

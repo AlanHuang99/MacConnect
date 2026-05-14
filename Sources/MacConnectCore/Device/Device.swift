@@ -65,8 +65,23 @@ public final class Device: ObservableObject, Identifiable {
                 .warning(
                     "Device \(self.id, privacy: .public) has no link; dropping packet \(packet.type, privacy: .public)"
                 )
+            DiagnosticLog.shared.record("send", "refused packet=\(packet.type) device=\(id) reason=no-link")
             return false
         }
         return link.send(packet)
+    }
+
+    @discardableResult
+    public func sendUserCommand(
+        _ packet: NetworkPacket,
+        failureMessage: String,
+        failureDetail: String? = "Device not ready"
+    ) -> Bool {
+        let sent = send(packet)
+        if !sent {
+            Log.plugin.notice("Command \(packet.type, privacy: .public) not sent to \(self.id, privacy: .public)")
+            TransferStore.shared.publishCommandFailure(message: failureMessage, detail: failureDetail)
+        }
+        return sent
     }
 }

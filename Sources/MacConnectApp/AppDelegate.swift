@@ -22,6 +22,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationDidFinishLaunching(_: Notification) {
+        DiagnosticLog.shared.record("app", "launch")
         // Order matters: the status item must exist BEFORE any heavy work
         // so the user always has a way to interact with (and quit) the app
         // even if networking, openssl, or Launch Services are slow. With
@@ -57,8 +58,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         // FIN-ACK; sleeping phones / dead Wi-Fi can leave the kernel
         // waiting the full close timeout. We give all closes a budget,
         // then let the kernel reap any stragglers when the process exits.
+        DiagnosticLog.shared.recordSync("app", "terminate-begin")
+        PayloadTransport.cancelAll(reason: "Application is quitting")
         LanLinkProvider.shared.stop(deadline: .now() + 0.75)
         NIOTransport.shared.shutdown(deadline: .now() + 0.5)
+        DiagnosticLog.shared.recordSync("app", "terminate-end")
     }
 
     private static func registerServicesIfNeeded() {
@@ -300,10 +304,15 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             else { return }
             guard device.isReachable else {
                 Log.plugin.notice("Drop notification reply for offline device \(deviceId, privacy: .public)")
+                await Notifier.show(title: "Reply not sent", body: "Device is offline")
                 return
             }
-            device.send(NotificationPlugin.replyPacket(requestReplyId: replyId, message: userText))
-            Log.plugin.info("Sent notification reply to \(deviceId, privacy: .public)")
+            if device.send(NotificationPlugin.replyPacket(requestReplyId: replyId, message: userText)) {
+                Log.plugin.info("Sent notification reply to \(deviceId, privacy: .public)")
+            } else {
+                Log.plugin.notice("Notification reply not sent to \(deviceId, privacy: .public)")
+                await Notifier.show(title: "Reply not sent", body: "Device not ready")
+            }
         }
     }
 }

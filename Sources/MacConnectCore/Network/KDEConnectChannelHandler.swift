@@ -39,6 +39,7 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
     /// large here).
     private static let plainIdentityBufferLimit = 64 * 1024
     private static let readyBufferLimit = 4 * 1024 * 1024
+    public static let tlsHandshakeTimeoutSeconds: Int64 = 15
 
     private let role: Role
     private var state: State = .awaitingPlainIdentity
@@ -49,6 +50,7 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
     private var firstLFSearchedBytes: Int = 0
     private var peerDeviceId: String?
     private var peerIdentity: IdentityPayload?
+    private var handshakeTimeout: Scheduled<Void>?
 
     private let sslContext: NIOSSLContext
     private let onIdentity: @Sendable (IdentityPayload, Channel) -> Void
@@ -122,6 +124,9 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
     public func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if let tls = event as? TLSUserEvent, case .handshakeCompleted = tls {
             Log.net.info("TLS handshake completed for \(self.peerDeviceId ?? "?", privacy: .public)")
+            DiagnosticLog.shared.record("net", "tls-complete device=\(peerDeviceId ?? "?")")
+            handshakeTimeout?.cancel()
+            handshakeTimeout = nil
             state = .ready
             onSecured()
             // Any plaintext bytes already buffered post-handshake (rare) drain now.
@@ -145,11 +150,16 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
         // crucial for diagnosing post-handshake drops on KDE Connect peers.
         let detail = String(reflecting: error)
         Log.net.error("Channel error \(self.peerDeviceId ?? "?", privacy: .public): \(detail, privacy: .public)")
+        DiagnosticLog.shared.record("net", "channel-error device=\(peerDeviceId ?? "?") error=\(detail)")
+        handshakeTimeout?.cancel()
+        handshakeTimeout = nil
         onClose(error)
         context.close(promise: nil)
     }
 
     public func channelInactive(context: ChannelHandlerContext) {
+        handshakeTimeout?.cancel()
+        handshakeTimeout = nil
         onClose(nil)
         context.fireChannelInactive()
     }
@@ -249,6 +259,15 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
             }
             try context.pipeline.syncOperations.addHandler(sslHandler, position: .first)
             state = .awaitingTLSHandshake
+            handshakeTimeout?.cancel()
+            let channel = context.channel
+            let deviceId = peerDeviceId ?? "?"
+            handshakeTimeout = context.eventLoop.scheduleTask(in: .seconds(Self.tlsHandshakeTimeoutSeconds)) { [weak self] in
+                guard let self, case .awaitingTLSHandshake = self.state else { return }
+                Log.net.notice("TLS handshake timed out for \(deviceId, privacy: .public); closing channel")
+                DiagnosticLog.shared.record("net", "tls-timeout device=\(deviceId)")
+                channel.close(promise: nil)
+            }
 
             // Replay leftover bytes through the head of the pipeline so SSL
             // can decrypt them.

@@ -48,6 +48,31 @@ final class DeviceManagerPairingTests: XCTestCase {
         XCTAssertFalse(device.outgoingPairRequest, "Pending flag should clear")
     }
 
+    func testRequestPairDoesNotLeavePendingFlagWhenSendFails() {
+        let identity = Self.makeIdentity(deviceId: "test-request-send-fail-\(UUID().uuidString)")
+        let device = DeviceManager.shared.upsert(identity: identity)
+        device.isPaired = false
+        device.outgoingPairRequest = false
+
+        DeviceManager.shared.requestPair(device)
+
+        XCTAssertFalse(device.outgoingPairRequest, "Failed send must not leave a stuck outgoing request")
+        XCTAssertFalse(device.isPaired)
+    }
+
+    func testAcceptPairingDoesNotTrustWhenSendFails() {
+        let identity = Self.makeIdentity(deviceId: "test-accept-send-fail-\(UUID().uuidString)")
+        let device = DeviceManager.shared.upsert(identity: identity)
+        device.isPaired = false
+        device.incomingPairRequest = true
+
+        DeviceManager.shared.acceptPairing(device)
+
+        XCTAssertFalse(device.isPaired, "Failed accept send must not mark the device trusted")
+        XCTAssertTrue(device.incomingPairRequest, "Prompt stays available so the user can retry")
+        XCTAssertFalse(Settings.shared.isTrusted(device.id))
+    }
+
     func testRejectionFromPeerClearsTrust() {
         let identity = Self.makeIdentity(deviceId: "test-reject-\(UUID().uuidString)")
         let device = DeviceManager.shared.upsert(identity: identity)
@@ -58,6 +83,20 @@ final class DeviceManagerPairingTests: XCTestCase {
 
         XCTAssertFalse(device.isPaired)
         XCTAssertFalse(Settings.shared.isTrusted(device.id))
+    }
+
+    func testLocalUnpairClearsTrustEvenIfNoticeSendFails() {
+        let identity = Self.makeIdentity(deviceId: "test-local-unpair-\(UUID().uuidString)")
+        let device = DeviceManager.shared.upsert(identity: identity)
+        device.isPaired = true
+        Settings.shared.markTrusted(device.id)
+
+        DeviceManager.shared.unpair(device)
+
+        XCTAssertFalse(device.isPaired)
+        XCTAssertFalse(Settings.shared.isTrusted(device.id))
+        XCTAssertFalse(device.outgoingPairRequest)
+        XCTAssertFalse(device.incomingPairRequest)
     }
 
     private static func makeIdentity(deviceId: String) -> IdentityPayload {

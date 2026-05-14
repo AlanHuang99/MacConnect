@@ -126,6 +126,10 @@ public final class TransferStore: ObservableObject {
         toast = nil
     }
 
+    public func publishCommandFailure(message: String, detail: String? = nil) {
+        publishToast(kind: .failure, message: message, detail: detail)
+    }
+
     private func publishToast(for transfer: Transfer) {
         let kind: ToastKind
         let message: String
@@ -150,6 +154,10 @@ public final class TransferStore: ObservableObject {
             // exhaustive without surfacing a misleading toast.
             return
         }
+        publishToast(kind: kind, message: message, detail: detail)
+    }
+
+    private func publishToast(kind: ToastKind, message: String, detail: String?) {
         let new = Toast(
             id: UUID(),
             kind: kind,

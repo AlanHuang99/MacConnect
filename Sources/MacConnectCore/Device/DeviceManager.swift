@@ -47,29 +47,61 @@ public final class DeviceManager: ObservableObject {
     }
 
     public func acceptPairing(_ device: Device) {
+        guard device.send(PairPacketBuilder.response(accept: true)) else {
+            Log.pair.notice("Pair accept not sent to \(device.id, privacy: .public)")
+            DiagnosticLog.shared.record("pair", "accept-send-failed device=\(device.id)")
+            TransferStore.shared.publishCommandFailure(
+                message: "Pairing failed",
+                detail: "Device not ready"
+            )
+            objectWillChange.send()
+            return
+        }
         Settings.shared.markTrusted(device.id)
         device.isPaired = true
         device.incomingPairRequest = false
         device.outgoingPairRequest = false
-        device.send(PairPacketBuilder.response(accept: true))
+        DiagnosticLog.shared.record("pair", "accept-sent device=\(device.id)")
         objectWillChange.send()
     }
 
     public func rejectPairing(_ device: Device) {
         device.incomingPairRequest = false
-        device.send(PairPacketBuilder.response(accept: false))
+        if !device.send(PairPacketBuilder.response(accept: false)) {
+            Log.pair.notice("Pair reject not sent to \(device.id, privacy: .public)")
+            DiagnosticLog.shared.record("pair", "reject-send-failed device=\(device.id)")
+            TransferStore.shared.publishCommandFailure(
+                message: "Pair response not sent",
+                detail: "Device not ready"
+            )
+        } else {
+            DiagnosticLog.shared.record("pair", "reject-sent device=\(device.id)")
+        }
         objectWillChange.send()
     }
 
     public func unpair(_ device: Device) {
+        let sent = device.send(PairPacketBuilder.response(accept: false))
+        if !sent {
+            Log.pair.notice("Unpair notice not sent to \(device.id, privacy: .public)")
+            DiagnosticLog.shared.record("pair", "unpair-send-failed device=\(device.id)")
+            TransferStore.shared.publishCommandFailure(
+                message: "Unpaired locally",
+                detail: "The peer could not be notified"
+            )
+        } else {
+            DiagnosticLog.shared.record("pair", "unpair-sent device=\(device.id)")
+        }
         Settings.shared.unmarkTrusted(device.id)
         Settings.shared.clearPerDevicePluginOverrides(forDevice: device.id)
         CertificateService.shared.deleteRemoteCert(deviceId: device.id)
         device.isPaired = false
+        device.outgoingPairRequest = false
+        device.incomingPairRequest = false
         device.pinMismatch = false
         device.presentedFingerprint = nil
         MprisStore.shared.clear(deviceId: device.id)
-        device.send(PairPacketBuilder.response(accept: false))
+        LanLinkProvider.shared.disconnect(deviceId: device.id, reason: "local-unpair")
         objectWillChange.send()
     }
 
@@ -101,8 +133,19 @@ public final class DeviceManager: ObservableObject {
     }
 
     public func requestPair(_ device: Device) {
+        guard device.send(PairPacketBuilder.request()) else {
+            device.outgoingPairRequest = false
+            Log.pair.notice("Pair request not sent to \(device.id, privacy: .public)")
+            DiagnosticLog.shared.record("pair", "request-send-failed device=\(device.id)")
+            TransferStore.shared.publishCommandFailure(
+                message: "Pair request not sent",
+                detail: "Device not ready"
+            )
+            objectWillChange.send()
+            return
+        }
         device.outgoingPairRequest = true
-        device.send(PairPacketBuilder.request())
+        DiagnosticLog.shared.record("pair", "request-sent device=\(device.id)")
         objectWillChange.send()
     }
 
@@ -119,7 +162,9 @@ public final class DeviceManager: ObservableObject {
                     .debug("Already paired with \(device.id, privacy: .public); ignoring pair=true")
                 // Re-confirm so the peer's state catches up if it
                 // forgot the trust on its side. Cheap and idempotent.
-                device.send(PairPacketBuilder.response(accept: true))
+                if !device.send(PairPacketBuilder.response(accept: true)) {
+                    DiagnosticLog.shared.record("pair", "reconfirm-send-failed device=\(device.id)")
+                }
                 device.incomingPairRequest = false
                 device.outgoingPairRequest = false
                 objectWillChange.send()
@@ -143,6 +188,8 @@ public final class DeviceManager: ObservableObject {
             device.isPaired = false
             device.outgoingPairRequest = false
             device.incomingPairRequest = false
+            LanLinkProvider.shared.disconnect(deviceId: device.id, reason: "remote-pair-false")
+            DiagnosticLog.shared.record("pair", "remote-false device=\(device.id)")
         }
         objectWillChange.send()
     }

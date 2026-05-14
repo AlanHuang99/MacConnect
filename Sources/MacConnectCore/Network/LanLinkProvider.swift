@@ -22,8 +22,15 @@ public final class LanLinkProvider: @unchecked Sendable {
     /// every 5 s instead of socket-create-then-close on each tick.
     private var broadcastFD: Int32 = -1
     private let linkLock = NSLock()
-    private var channelToDeviceId: [ObjectIdentifier: String] = [:]
+    private var activeChannelToDeviceId: [ObjectIdentifier: String] = [:]
+    private var pendingChannelToDeviceId: [ObjectIdentifier: String] = [:]
     private var linksByDeviceId: [String: LanLink] = [:]
+    private var pendingByDeviceId: [String: PendingLink] = [:]
+
+    private struct PendingLink {
+        let identity: IdentityPayload
+        let channel: Channel
+    }
 
     /// Per-peer dial cooldown so a peer whose TLS handshake keeps
     /// failing doesn't get redialed every 5 s discovery tick. Without
@@ -43,8 +50,29 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     public init() {}
 
+    struct DebugSnapshot: Equatable {
+        let activeDeviceIds: Set<String>
+        let pendingDeviceIds: Set<String>
+    }
+
+    func debugSnapshot() -> DebugSnapshot {
+        linkLock.lock()
+        defer { linkLock.unlock() }
+        return DebugSnapshot(
+            activeDeviceIds: Set(linksByDeviceId.keys),
+            pendingDeviceIds: Set(pendingByDeviceId.keys)
+        )
+    }
+
+    func debugLink(for deviceId: String) -> LanLink? {
+        linkLock.lock()
+        defer { linkLock.unlock() }
+        return linksByDeviceId[deviceId]
+    }
+
     public func start() throws {
         try CertificateService.shared.ensureIdentity()
+        DiagnosticLog.shared.record("app", "network-start requested")
         let (channel, port) = try NIOTransport.shared.startListener(
             portRange: Settings.minTCPPort ... Settings.maxTCPPort,
             onIdentity: { [weak self] identity, channel in
@@ -63,6 +91,7 @@ public final class LanLinkProvider: @unchecked Sendable {
         serverChannel = channel
         tcpPort = port
         Log.net.info("TCP listener on \(port, privacy: .public)")
+        DiagnosticLog.shared.record("net", "tcp-listener port=\(port)")
 
         try startUDPListener()
         startMDNSBrowser()
@@ -97,6 +126,7 @@ public final class LanLinkProvider: @unchecked Sendable {
     /// for them to settle, then move on and let the kernel reap whatever
     /// remains as the process exits.
     public func stop(deadline: DispatchTime = .now() + 1.0) {
+        DiagnosticLog.shared.record("app", "network-stop begin")
         broadcastTimer?.cancel()
         broadcastTimer = nil
         udpListener?.cancel()
@@ -119,7 +149,11 @@ public final class LanLinkProvider: @unchecked Sendable {
         // so it can resolve the deviceId and invoke `link.notifyClosed()`.
         linkLock.lock()
         let activeLinks = Array(linksByDeviceId.values)
+        let pendingChannels = pendingByDeviceId.values.map(\.channel)
+        let activeCount = activeLinks.count
+        let pendingCount = pendingChannels.count
         linkLock.unlock()
+        DiagnosticLog.shared.record("app", "network-stop snapshot active=\(activeCount) pending=\(pendingCount)")
 
         // Fan all closes out at once, count them down with a DispatchGroup
         // so we can bound the total wait.
@@ -128,12 +162,17 @@ public final class LanLinkProvider: @unchecked Sendable {
             group.enter()
             link.activeChannel.close().whenComplete { _ in group.leave() }
         }
+        for channel in pendingChannels {
+            group.enter()
+            channel.close().whenComplete { _ in group.leave() }
+        }
         if let serverChannel {
             group.enter()
             serverChannel.close().whenComplete { _ in group.leave() }
         }
         if group.wait(timeout: deadline) == .timedOut {
             Log.net.notice("stop() timed out waiting for channel closes; proceeding")
+            DiagnosticLog.shared.record("app", "network-stop close-timeout")
         }
 
         // Belt-and-braces sweep: anything `handleClosed` didn't drain (e.g.
@@ -142,7 +181,9 @@ public final class LanLinkProvider: @unchecked Sendable {
         linkLock.lock()
         let stragglers = Array(linksByDeviceId.values)
         linksByDeviceId.removeAll()
-        channelToDeviceId.removeAll()
+        activeChannelToDeviceId.removeAll()
+        pendingChannelToDeviceId.removeAll()
+        pendingByDeviceId.removeAll()
         dialCooldown.removeAll()
         linkLock.unlock()
         // Drop the shared link reference so links don't outlive the provider.
@@ -151,6 +192,7 @@ public final class LanLinkProvider: @unchecked Sendable {
         }
 
         serverChannel = nil
+        DiagnosticLog.shared.record("app", "network-stop end")
     }
 
     public func refresh() {
@@ -199,6 +241,28 @@ public final class LanLinkProvider: @unchecked Sendable {
         }
     }
 
+    /// Force a device back to a clean disconnected state. Used by local and
+    /// remote unpair paths so stale secure channels cannot keep accepting
+    /// packets after trust has been removed.
+    public func disconnect(deviceId: String, reason: String) {
+        linkLock.lock()
+        let link = linksByDeviceId.removeValue(forKey: deviceId)
+        let activeChannel = link?.activeChannel
+        if let activeChannel {
+            activeChannelToDeviceId.removeValue(forKey: ObjectIdentifier(activeChannel))
+        }
+        let pending = pendingByDeviceId.removeValue(forKey: deviceId)
+        if let pending {
+            pendingChannelToDeviceId.removeValue(forKey: ObjectIdentifier(pending.channel))
+        }
+        linkLock.unlock()
+
+        DiagnosticLog.shared.record("net", "disconnect device=\(deviceId) reason=\(reason)")
+        activeChannel?.close(promise: nil)
+        pending?.channel.close(promise: nil)
+        link?.notifyClosed()
+    }
+
     private func startBroadcastTimer() {
         broadcastTimer?.cancel()
         let timer = DispatchSource.makeTimerSource(queue: queue)
@@ -212,7 +276,7 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     // MARK: - Channel callbacks
 
-    private func handleIdentity(_ identity: IdentityPayload, channel: Channel) {
+    func handleIdentity(_ identity: IdentityPayload, channel: Channel) {
         // Same defence as in UDP discovery: reject any inbound TCP from one
         // of our own interface IPs. Catches the case where another
         // KDE Connect implementation on the same Mac is connecting to us.
@@ -227,18 +291,44 @@ public final class LanLinkProvider: @unchecked Sendable {
             return
         }
         Log.net.info("Identity from \(identity.deviceName, privacy: .public) (\(identity.deviceId, privacy: .public))")
+        DiagnosticLog.shared.record(
+            "net",
+            "identity device=\(identity.deviceId) name=\(identity.deviceName) channel=\(ObjectIdentifier(channel))"
+        )
         linkLock.lock()
         if let existing = linksByDeviceId[identity.deviceId] {
-            // Already have a link for this device. Replace the underlying
-            // channel with the newer one so sends always go on the most
-            // recent connection. Both peers do this independently and end
-            // up agreeing on the same active channel.
+            if existing.activeChannel === channel {
+                linkLock.unlock()
+                Task { @MainActor in
+                    _ = DeviceManager.shared.upsert(identity: identity)
+                }
+                return
+            }
+
+            if existing.isSecure {
+                registerPendingLocked(identity: identity, channel: channel)
+                let pendingCount = pendingByDeviceId.count
+                linkLock.unlock()
+                Log.net.info("Registered pending replacement for \(identity.deviceId, privacy: .public)")
+                DiagnosticLog.shared.record(
+                    "net",
+                    "candidate-registered device=\(identity.deviceId) pending=\(pendingCount)"
+                )
+                Task { @MainActor in
+                    _ = DeviceManager.shared.upsert(identity: identity)
+                }
+                return
+            }
+
+            // There is no usable secure channel yet. Replace the pre-TLS
+            // attempt and let the generic TLS deadline close it if it stalls.
             let oldChannel = existing.activeChannel
-            existing.replaceChannel(with: channel)
-            channelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
-            channelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
+            existing.replaceChannel(with: channel, secure: false)
+            activeChannelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
+            activeChannelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
             linkLock.unlock()
-            Log.net.info("Replaced channel for existing link \(identity.deviceId, privacy: .public)")
+            Log.net.info("Replaced pre-secure channel for existing link \(identity.deviceId, privacy: .public)")
+            DiagnosticLog.shared.record("net", "presecure-replaced device=\(identity.deviceId)")
             Task { @MainActor in
                 _ = DeviceManager.shared.upsert(identity: identity)
             }
@@ -268,16 +358,27 @@ public final class LanLinkProvider: @unchecked Sendable {
             }
         )
         linksByDeviceId[identity.deviceId] = link
-        channelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
+        activeChannelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
         linkLock.unlock()
         Task { @MainActor in
             _ = DeviceManager.shared.upsert(identity: identity)
         }
     }
 
+    private func registerPendingLocked(identity: IdentityPayload, channel: Channel) {
+        if let old = pendingByDeviceId.removeValue(forKey: identity.deviceId) {
+            pendingChannelToDeviceId.removeValue(forKey: ObjectIdentifier(old.channel))
+            if old.channel !== channel {
+                old.channel.close(promise: nil)
+            }
+        }
+        pendingByDeviceId[identity.deviceId] = PendingLink(identity: identity, channel: channel)
+        pendingChannelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
+    }
+
     private func handlePacket(_ packet: NetworkPacket, channel: Channel) {
         linkLock.lock()
-        let deviceId = channelToDeviceId[ObjectIdentifier(channel)]
+        let deviceId = activeChannelToDeviceId[ObjectIdentifier(channel)]
         let link = deviceId.flatMap { linksByDeviceId[$0] }
         linkLock.unlock()
         guard let link else {
@@ -287,12 +388,34 @@ public final class LanLinkProvider: @unchecked Sendable {
         link.deliverPacket(packet)
     }
 
-    private func handleSecured(channel: Channel) {
+    func handleSecured(channel: Channel) {
         linkLock.lock()
-        guard let deviceId = channelToDeviceId[ObjectIdentifier(channel)],
+        let channelId = ObjectIdentifier(channel)
+        if let deviceId = pendingChannelToDeviceId.removeValue(forKey: channelId),
+           let pending = pendingByDeviceId.removeValue(forKey: deviceId),
+           let link = linksByDeviceId[deviceId]
+        {
+            let oldChannel = link.activeChannel
+            activeChannelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
+            activeChannelToDeviceId[channelId] = deviceId
+            link.replaceChannel(with: pending.channel, secure: true)
+            dialCooldown.clear(deviceId: deviceId)
+            linkLock.unlock()
+            Log.net.info("Promoted pending link after TLS: \(deviceId, privacy: .public)")
+            DiagnosticLog.shared.record("net", "candidate-promoted device=\(deviceId)")
+            Task { @MainActor in
+                _ = DeviceManager.shared.upsert(identity: pending.identity)
+                DeviceManager.shared.attach(link: link, to: deviceId)
+            }
+            return
+        }
+
+        guard let deviceId = activeChannelToDeviceId[channelId],
               let link = linksByDeviceId[deviceId]
         else {
             linkLock.unlock()
+            Log.net.warning("TLS completed for unknown channel; closing")
+            channel.close(promise: nil)
             return
         }
         link.isSecure = true
@@ -300,14 +423,29 @@ public final class LanLinkProvider: @unchecked Sendable {
         dialCooldown.clear(deviceId: deviceId)
         linkLock.unlock()
         Log.net.info("Link secured: \(deviceId, privacy: .public)")
+        DiagnosticLog.shared.record("net", "link-secured device=\(deviceId)")
         Task { @MainActor in
             DeviceManager.shared.attach(link: link, to: deviceId)
         }
     }
 
-    private func handleClosed(channel: Channel) {
+    func handleClosed(channel: Channel) {
         linkLock.lock()
-        guard let deviceId = channelToDeviceId.removeValue(forKey: ObjectIdentifier(channel)) else {
+        let channelId = ObjectIdentifier(channel)
+        if let deviceId = pendingChannelToDeviceId.removeValue(forKey: channelId) {
+            if let pending = pendingByDeviceId[deviceId], pending.channel === channel {
+                pendingByDeviceId.removeValue(forKey: deviceId)
+            }
+            let hasSecureActive = linksByDeviceId[deviceId]?.isSecure ?? false
+            linkLock.unlock()
+            Log.net.info("Pending link closed before TLS: \(deviceId, privacy: .public)")
+            DiagnosticLog.shared.record("net", "candidate-closed device=\(deviceId) secureActive=\(hasSecureActive)")
+            if !hasSecureActive {
+                recordDialFailure(deviceId: deviceId)
+            }
+            return
+        }
+        guard let deviceId = activeChannelToDeviceId.removeValue(forKey: channelId) else {
             linkLock.unlock()
             return
         }
@@ -330,6 +468,7 @@ public final class LanLinkProvider: @unchecked Sendable {
             recordDialFailure(deviceId: deviceId)
         }
         if isActive {
+            DiagnosticLog.shared.record("net", "link-closed device=\(deviceId) wasSecure=\(wasSecure)")
             link?.notifyClosed()
         }
     }
@@ -480,15 +619,16 @@ public final class LanLinkProvider: @unchecked Sendable {
         }
         Log.net.debug("UDP identity from \(identity.deviceName, privacy: .public)")
 
-        // Avoid double-connecting if we already have a secured link.
+        // Avoid double-connecting if we already have a link attempt in flight.
         // Also honour the per-peer dial cooldown — without it a peer
         // whose TLS handshake keeps failing gets redialed every 5 s
         // for as long as it broadcasts.
         linkLock.lock()
         let existing = linksByDeviceId[identity.deviceId]
+        let hasPending = pendingByDeviceId[identity.deviceId] != nil
         let canDial = dialCooldown.canDial(deviceId: identity.deviceId)
         linkLock.unlock()
-        if let existing, existing.isSecure { return }
+        if existing != nil || hasPending { return }
         if !canDial { return }
 
         Log.net

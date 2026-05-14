@@ -29,6 +29,9 @@ public final class PingPlugin: Plugin, @unchecked Sendable {
         if let message {
             body["message"] = .string(message)
         }
-        device.send(NetworkPacket(type: PacketType.ping, body: body))
+        device.sendUserCommand(
+            NetworkPacket(type: PacketType.ping, body: body),
+            failureMessage: "Ping not sent"
+        )
     }
 }

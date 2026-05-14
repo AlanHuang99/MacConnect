@@ -15,6 +15,11 @@ import NIOTLS
 public enum PayloadTransport {
     public static let portRange: ClosedRange<UInt16> = 1739 ... 1764
     public static let chunkBytes: Int = 64 * 1024
+    private static let registry = PayloadTransferRegistry()
+
+    public static func cancelAll(reason: String) {
+        registry.cancelAll(reason: reason)
+    }
 
     // MARK: - Sender
 
@@ -56,16 +61,21 @@ public enum PayloadTransport {
             }
             if !already { donePromise.fail(err) }
         }
+        let cancellationId = registry.registerCancellation { err in
+            tryFail(err)
+        }
 
         let bootstrap = ServerBootstrap(group: group)
             .serverChannelOption(ChannelOptions.socketOption(.so_reuseaddr), value: 1)
             .childChannelInitializer { channel in
+                Self.registry.track(channel)
                 let sslHandler = NIOSSLServerHandler(
                     context: context,
                     customVerificationCallback: TLSContextBuilder.verifier(forKnownDeviceId: peerDeviceId)
                 )
                 let payload = PayloadSenderHandler(
                     fileURL: fileURL,
+                    peerDeviceId: peerDeviceId,
                     onProgress: onProgress,
                     onComplete: {
                         onComplete()
@@ -100,30 +110,36 @@ public enum PayloadTransport {
         guard let port = boundPort, let serverChannel else {
             let err = NSError(domain: "MacConnect.Payload", code: 1,
                               userInfo: [NSLocalizedDescriptionKey: "No free payload port"])
+            registry.unregisterCancellation(cancellationId)
             onError(err)
             tryFail(err)
             return (0, donePromise)
         }
 
-        // After completion, close the server channel.
-        donePromise.futureResult.whenComplete { _ in
-            serverChannel.close(promise: nil)
-        }
-        // Defensive timeout: if the receiver never connects within 60s, give up.
-        group.next().scheduleTask(in: .seconds(60)) {
+        registry.track(serverChannel)
+        let timeoutTask = group.next().scheduleTask(in: .seconds(60)) {
             if serverChannel.isActive {
                 Log.net.warning("Payload listener on \(port, privacy: .public) timed out")
                 serverChannel.close(promise: nil)
                 let err = NSError(domain: "MacConnect.Payload", code: 2,
                                   userInfo: [NSLocalizedDescriptionKey: "Receiver never connected"])
+                onError(err)
                 tryFail(err)
             }
+        }
+        // After completion, close the server channel.
+        donePromise.futureResult.whenComplete { _ in
+            timeoutTask.cancel()
+            Self.registry.unregisterCancellation(cancellationId)
+            Self.registry.untrack(serverChannel)
+            serverChannel.close(promise: nil)
         }
 
         Log.net
             .info(
                 "Payload listener bound on port \(port, privacy: .public) for \(fileURL.lastPathComponent, privacy: .public)"
             )
+        DiagnosticLog.shared.record("payload", "sender-listener port=\(port) peer=\(peerDeviceId)")
         return (port, donePromise)
     }
 
@@ -153,6 +169,7 @@ public enum PayloadTransport {
                     let receiver = PayloadReceiverHandler(
                         fileURL: fileURL,
                         expectedSize: expectedSize,
+                        peerDeviceId: peerDeviceId,
                         onProgress: onProgress,
                         onComplete: onComplete,
                         onError: onError
@@ -168,11 +185,82 @@ public enum PayloadTransport {
 
         bootstrap.connect(host: host, port: Int(port)).whenComplete { result in
             switch result {
-            case .success:
+            case .success(let channel):
+                registry.track(channel)
                 Log.net.info("Payload receiver connected to \(host, privacy: .public):\(port, privacy: .public)")
+                DiagnosticLog.shared.record("payload", "receiver-connected peer=\(peerDeviceId) port=\(port)")
             case .failure(let err):
+                DiagnosticLog.shared.record(
+                    "payload",
+                    "receiver-connect-failed peer=\(peerDeviceId) port=\(port) error=\(err.localizedDescription)"
+                )
                 onError(err)
             }
+        }
+    }
+}
+
+private final class PayloadTransferRegistry: @unchecked Sendable {
+    private let lock = NSLock()
+    private var channels: [ObjectIdentifier: Channel] = [:]
+    private var cancellationHandlers: [UUID: @Sendable (Error) -> Void] = [:]
+
+    func track(_ channel: Channel) {
+        let id = ObjectIdentifier(channel)
+        lock.lock()
+        channels[id] = channel
+        lock.unlock()
+        channel.closeFuture.whenComplete { [weak self] _ in
+            self?.untrack(channel)
+        }
+    }
+
+    func untrack(_ channel: Channel) {
+        lock.lock()
+        channels.removeValue(forKey: ObjectIdentifier(channel))
+        lock.unlock()
+    }
+
+    func registerCancellation(_ handler: @escaping @Sendable (Error) -> Void) -> UUID {
+        let id = UUID()
+        lock.lock()
+        cancellationHandlers[id] = handler
+        lock.unlock()
+        return id
+    }
+
+    func unregisterCancellation(_ id: UUID) {
+        lock.lock()
+        cancellationHandlers.removeValue(forKey: id)
+        lock.unlock()
+    }
+
+    func cancelAll(reason: String) {
+        let error = NSError(
+            domain: "MacConnect.Payload",
+            code: 5,
+            userInfo: [NSLocalizedDescriptionKey: reason]
+        )
+        lock.lock()
+        let handlers = Array(cancellationHandlers.values)
+        let activeChannels = Array(channels.values)
+        cancellationHandlers.removeAll()
+        channels.removeAll()
+        lock.unlock()
+
+        guard !handlers.isEmpty || !activeChannels.isEmpty else { return }
+        Log.net.notice(
+            "Cancelling payload transfers handlers=\(handlers.count, privacy: .public) channels=\(activeChannels.count, privacy: .public)"
+        )
+        DiagnosticLog.shared.record(
+            "payload",
+            "cancel-all handlers=\(handlers.count) channels=\(activeChannels.count) reason=\(reason)"
+        )
+        for handler in handlers {
+            handler(error)
+        }
+        for channel in activeChannels {
+            channel.close(promise: nil)
         }
     }
 }
@@ -183,6 +271,7 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
     typealias InboundIn = ByteBuffer
 
     private let fileURL: URL
+    private let peerDeviceId: String
     private let onProgress: (@Sendable (Int64) -> Void)?
     private let onComplete: @Sendable () -> Void
     private let onError: @Sendable (Error) -> Void
@@ -191,11 +280,13 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
 
     init(
         fileURL: URL,
+        peerDeviceId: String,
         onProgress: (@Sendable (Int64) -> Void)? = nil,
         onComplete: @escaping @Sendable () -> Void,
         onError: @escaping @Sendable (Error) -> Void
     ) {
         self.fileURL = fileURL
+        self.peerDeviceId = peerDeviceId
         self.onProgress = onProgress
         self.onComplete = onComplete
         self.onError = onError
@@ -203,6 +294,10 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
 
     func userInboundEventTriggered(context: ChannelHandlerContext, event: Any) {
         if let tls = event as? TLSUserEvent, case .handshakeCompleted = tls {
+            DiagnosticLog.shared.record(
+                "payload",
+                "sender-connected peer=\(peerDeviceId) file=\(fileURL.lastPathComponent)"
+            )
             streamFile(context: context)
         }
         context.fireUserInboundEventTriggered(event)
@@ -210,6 +305,10 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
         Log.net.error("Payload sender error: \(error.localizedDescription, privacy: .public)")
+        DiagnosticLog.shared.record(
+            "payload",
+            "sender-error peer=\(peerDeviceId) file=\(fileURL.lastPathComponent) error=\(error.localizedDescription)"
+        )
         onError(error)
         context.close(promise: nil)
     }
@@ -220,8 +319,11 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
         let url = fileURL
         let allocator = context.channel.allocator
         let channel = context.channel
+        let peerDeviceId = peerDeviceId
+        let fileName = url.lastPathComponent
 
         let progress = onProgress
+        DiagnosticLog.shared.record("payload", "sender-start peer=\(peerDeviceId) file=\(fileName)")
         queue.async { [self] in
             do {
                 let handle = try FileHandle(forReadingFrom: url)
@@ -239,6 +341,10 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
                     do {
                         try promise.futureResult.wait()
                     } catch {
+                        DiagnosticLog.shared.record(
+                            "payload",
+                            "sender-write-failed peer=\(peerDeviceId) file=\(fileName) sent=\(totalSent) error=\(error.localizedDescription)"
+                        )
                         onError(error)
                         channel.eventLoop.execute { channel.close(promise: nil) }
                         return
@@ -246,12 +352,21 @@ final class PayloadSenderHandler: ChannelInboundHandler, @unchecked Sendable {
                     totalSent += Int64(chunk.count)
                     progress?(totalSent)
                 }
+                let sent = totalSent
                 channel.eventLoop.execute {
+                    DiagnosticLog.shared.record(
+                        "payload",
+                        "sender-complete peer=\(peerDeviceId) file=\(fileName) bytes=\(sent)"
+                    )
                     self.onComplete()
                     channel.close(promise: nil)
                 }
             } catch {
                 Log.net.error("Payload read error: \(error.localizedDescription, privacy: .public)")
+                DiagnosticLog.shared.record(
+                    "payload",
+                    "sender-read-failed peer=\(peerDeviceId) file=\(fileName) error=\(error.localizedDescription)"
+                )
                 onError(error)
                 channel.eventLoop.execute { channel.close(promise: nil) }
             }
@@ -266,6 +381,7 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
 
     private let fileURL: URL
     private let expectedSize: Int64
+    private let peerDeviceId: String
     private let onProgress: (@Sendable (Int64) -> Void)?
     private let onComplete: @Sendable () -> Void
     private let onError: @Sendable (Error) -> Void
@@ -295,12 +411,14 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
     init(
         fileURL: URL,
         expectedSize: Int64,
+        peerDeviceId: String,
         onProgress: (@Sendable (Int64) -> Void)? = nil,
         onComplete: @escaping @Sendable () -> Void,
         onError: @escaping @Sendable (Error) -> Void
     ) {
         self.fileURL = fileURL
         self.expectedSize = expectedSize
+        self.peerDeviceId = peerDeviceId
         self.onProgress = onProgress
         self.onComplete = onComplete
         self.onError = onError
@@ -310,9 +428,18 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
         FileManager.default.createFile(atPath: fileURL.path, contents: nil)
         fileHandle = try? FileHandle(forWritingTo: fileURL)
         if fileHandle == nil {
+            DiagnosticLog.shared.record(
+                "payload",
+                "receiver-open-failed peer=\(peerDeviceId) file=\(fileURL.lastPathComponent) expected=\(expectedSize)"
+            )
             onError(NSError(domain: "MacConnect.Payload", code: 3,
                             userInfo: [NSLocalizedDescriptionKey: "Could not open output file"]))
             context.close(promise: nil)
+        } else {
+            DiagnosticLog.shared.record(
+                "payload",
+                "receiver-open peer=\(peerDeviceId) file=\(fileURL.lastPathComponent) expected=\(expectedSize)"
+            )
         }
     }
 
@@ -391,6 +518,10 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
 
     func channelInactive(context: ChannelHandlerContext) {
         let channel = context.channel
+        DiagnosticLog.shared.record(
+            "payload",
+            "receiver-inactive peer=\(peerDeviceId) file=\(fileURL.lastPathComponent) bytes=\(bytesReceived) expected=\(expectedSize)"
+        )
         // Drain any pending writes before deciding success — channelInactive
         // can fire while bytes are still being copied to disk.
         let pending = writeChain ?? context.eventLoop.makeSucceededVoidFuture()
@@ -405,6 +536,10 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
     }
 
     func errorCaught(context: ChannelHandlerContext, error: Error) {
+        DiagnosticLog.shared.record(
+            "payload",
+            "receiver-error peer=\(peerDeviceId) file=\(fileURL.lastPathComponent) bytes=\(bytesReceived) expected=\(expectedSize) error=\(error.localizedDescription)"
+        )
         finish(on: context.channel, success: false, error: error)
         context.close(promise: nil)
     }
@@ -420,12 +555,20 @@ final class PayloadReceiverHandler: ChannelInboundHandler, @unchecked Sendable {
                 .info(
                     "Payload received \(self.bytesReceived, privacy: .public) bytes -> \(self.fileURL.lastPathComponent, privacy: .public)"
                 )
+            DiagnosticLog.shared.record(
+                "payload",
+                "receiver-complete peer=\(peerDeviceId) file=\(fileURL.lastPathComponent) bytes=\(bytesReceived) expected=\(expectedSize)"
+            )
             onComplete()
         } else {
             try? FileManager.default.removeItem(at: fileURL)
             let err = error ?? NSError(domain: "MacConnect.Payload", code: 4,
                                        userInfo: [NSLocalizedDescriptionKey: "Connection closed before file complete"])
             Log.net.error("Payload receive failed: \(err.localizedDescription, privacy: .public)")
+            DiagnosticLog.shared.record(
+                "payload",
+                "receiver-failed peer=\(peerDeviceId) file=\(fileURL.lastPathComponent) bytes=\(bytesReceived) expected=\(expectedSize) error=\(err.localizedDescription)"
+            )
             onError(err)
         }
     }

@@ -22,13 +22,15 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
             // and return only the player list. Re-asking with the player
             // populated is what actually fills the tile on first open.
             for playerName in players {
-                device.send(NetworkPacket(
+                if !device.send(NetworkPacket(
                     type: PacketType.mprisRequest,
                     body: [
                         "requestNowPlaying": .bool(true),
                         "player": .string(playerName)
                     ]
-                ))
+                )) {
+                    Log.plugin.notice("MPRIS now-playing request not sent to \(device.id, privacy: .public)")
+                }
             }
         }
         MprisStore.shared.update(deviceId: device.id, with: packet)
@@ -42,10 +44,12 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
     /// requests → per-player state.
     @MainActor
     public static func requestNowPlaying(from device: Device) {
-        device.send(NetworkPacket(
+        if !device.send(NetworkPacket(
             type: PacketType.mprisRequest,
             body: ["requestPlayerList": .bool(true)]
-        ))
+        )) {
+            Log.plugin.notice("MPRIS player-list request not sent to \(device.id, privacy: .public)")
+        }
     }
 
     @MainActor
@@ -69,6 +73,9 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
         if let player = MprisStore.shared.state(for: device.id)?.player {
             body["player"] = .string(player)
         }
-        device.send(NetworkPacket(type: PacketType.mprisRequest, body: body))
+        device.sendUserCommand(
+            NetworkPacket(type: PacketType.mprisRequest, body: body),
+            failureMessage: "Media command not sent"
+        )
     }
 }

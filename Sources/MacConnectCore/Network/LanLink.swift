@@ -48,22 +48,13 @@ public final class LanLink: @unchecked Sendable {
     }
 
     /// Replace the active channel with a newer connection. The old
-    /// channel is closed; the new one becomes the send target.
-    ///
-    /// `_isSecure` is reset to `false` because the new channel has not
-    /// completed its TLS handshake yet. Without this reset, `send()`
-    /// would happily write to the new channel during the ~50–100 ms
-    /// pre-handshake window; NIOSSL would buffer the plaintext and
-    /// silently drop it if the new channel never reaches handshake (the
-    /// observed cause of intermittent "send file" failures with peers
-    /// like the KDE Connect iOS app that cycle TCP every 5 s). The
-    /// flag flips back to `true` when LanLinkProvider.handleSecured
-    /// fires for the new channel.
-    public func replaceChannel(with newChannel: Channel) {
+    /// channel is closed; the new one becomes the send target. Callers
+    /// must pass whether the replacement has already completed TLS.
+    public func replaceChannel(with newChannel: Channel, secure: Bool = false) {
         lock.lock()
         let old = channel
         channel = newChannel
-        _isSecure = false
+        _isSecure = secure
         lock.unlock()
         if old !== newChannel {
             old.close(promise: nil)
@@ -111,6 +102,7 @@ public final class LanLink: @unchecked Sendable {
                 .warning(
                     "Refusing to send \(packet.type, privacy: .public) before TLS for \(self.deviceId, privacy: .public)"
                 )
+            DiagnosticLog.shared.record("send", "refused packet=\(packet.type) device=\(deviceId) reason=not-secure")
             return false
         }
         do {

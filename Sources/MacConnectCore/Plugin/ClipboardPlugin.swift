@@ -63,10 +63,10 @@ public final class ClipboardPlugin: Plugin, @unchecked Sendable {
     @MainActor
     public static func pushClipboard(to device: Device) {
         if let s = NSPasteboard.general.string(forType: .string), !s.isEmpty {
-            device.send(NetworkPacket(
+            device.sendUserCommand(NetworkPacket(
                 type: PacketType.clipboard,
                 body: ["content": .string(s)]
-            ))
+            ), failureMessage: "Clipboard not sent")
             return
         }
         // No text — try an image. KDE Connect's protocol doesn't carry
@@ -79,6 +79,10 @@ public final class ClipboardPlugin: Plugin, @unchecked Sendable {
             return
         }
         Log.plugin.notice("Clipboard empty / unsupported; nothing to push")
+        TransferStore.shared.publishCommandFailure(
+            message: "Clipboard not sent",
+            detail: "Clipboard is empty or unsupported"
+        )
     }
 
     @MainActor

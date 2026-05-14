@@ -35,7 +35,7 @@ public enum Notifier {
         UNUserNotificationCenter.current().setNotificationCategories([category])
     }
 
-    static func show(title: String, body: String, replyContext: ReplyContext? = nil) async {
+    public static func show(title: String, body: String, replyContext: ReplyContext? = nil) async {
         let content = UNMutableNotificationContent()
         content.title = title
         content.body = body

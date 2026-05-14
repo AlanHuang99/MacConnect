@@ -13,6 +13,9 @@ public final class FindMyPhonePlugin: Plugin, @unchecked Sendable {
 
     @MainActor
     public static func ring(_ device: Device) {
-        device.send(NetworkPacket(type: PacketType.findMyPhoneRequest))
+        device.sendUserCommand(
+            NetworkPacket(type: PacketType.findMyPhoneRequest),
+            failureMessage: "Command not sent"
+        )
     }
 }
