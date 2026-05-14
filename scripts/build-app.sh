@@ -4,6 +4,7 @@
 # Usage:
 #   ./scripts/build-app.sh                                # debug, host arch
 #   ./scripts/build-app.sh release                        # release, host arch
+#   ./scripts/build-app.sh release-arm64                  # release, Apple Silicon only
 #   ./scripts/build-app.sh release-universal              # release, arm64+x86_64
 #   ./scripts/build-app.sh release-universal 0.1.0        # also stamp version
 set -euo pipefail
@@ -14,6 +15,11 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
 
 case "$CONFIG" in
+  release-arm64)
+    echo ">> Building macconnect (release, arm64)"
+    swift build -c release --arch arm64
+    BIN_DIR="$(swift build --show-bin-path -c release --arch arm64)"
+    ;;
   release-universal)
     echo ">> Building macconnect (release, universal arm64+x86_64)"
     swift build -c release --arch arm64 --arch x86_64
@@ -26,7 +32,7 @@ case "$CONFIG" in
     ;;
   *)
     echo "Unknown config: $CONFIG" >&2
-    echo "Valid: debug | release | release-universal" >&2
+    echo "Valid: debug | release | release-arm64 | release-universal" >&2
     exit 1
     ;;
 esac

@@ -40,13 +40,14 @@ jobs:
       - name: Resolve dependencies
         run: swift package resolve
 
-      - name: Build universal .app
-        run: ./scripts/build-app.sh release-universal "${{ steps.ver.outputs.version }}"
+      - name: Build arm64 .app
+        run: ./scripts/build-app.sh release-arm64 "${{ steps.ver.outputs.version }}"
 
-      - name: Verify universal binary
+      - name: Verify arm64 binary
         run: |
           file build/MacConnect.app/Contents/MacOS/MacConnect
-          lipo -info build/MacConnect.app/Contents/MacOS/MacConnect
+          ARCHS="$(lipo -archs build/MacConnect.app/Contents/MacOS/MacConnect)"
+          test "$ARCHS" = "arm64"
 
       - name: Import Developer ID certificate
         env:
@@ -174,7 +175,7 @@ jobs:
           3. Launch normally — the app is signed with Apple Developer ID and
              notarized, so Gatekeeper will not warn.
 
-          Universal binary: arm64 + x86_64. Requires macOS 13+.
+          Apple Silicon binary: arm64. Requires macOS 13+.
 
           See [README](https://github.com/${{ github.repository }}/blob/main/README.md)
           for what's working and what's not.

@@ -42,7 +42,7 @@ Download the latest release from [Releases](../../releases). Both a `.dmg` and a
 2. Drag `MacConnect.app` to `Applications`.
 3. Launch normally — the app is signed with Apple Developer ID and notarized, so Gatekeeper will not warn.
 
-The binary is universal (Apple Silicon + Intel) and requires macOS 13 or later.
+The binary is built for Apple Silicon Macs and requires macOS 13 or later.
 
 ## Requirements (development)
 
@@ -56,8 +56,8 @@ The binary is universal (Apple Silicon + Intel) and requires macOS 13 or later.
 # Assemble a .app bundle
 ./scripts/build-app.sh release
 
-# Universal (arm64 + x86_64) build
-./scripts/build-app.sh release-universal 0.1.0
+# Apple Silicon release build
+./scripts/build-app.sh release-arm64 0.1.0
 
 # Launch
 open build/MacConnect.app
@@ -118,7 +118,7 @@ Notes specific to this implementation:
 
 ## Releases
 
-Releases are tagged `vX.Y.Z`. Pushing a tag triggers `.github/workflows/release.yml`, which builds a universal binary, ad-hoc codesigns it, packages it as a `.zip` and a drag-to-`/Applications` `.dmg`, and publishes a GitHub Release with both assets.
+Releases are tagged `vX.Y.Z`. Pushing a tag triggers `.github/workflows/release.yml`, which builds an Apple Silicon binary, signs and notarizes it, packages it as a `.zip` and a drag-to-`/Applications` `.dmg`, and publishes a GitHub Release with both assets.
 
 To cut a release locally:
 
