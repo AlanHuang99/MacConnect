@@ -64,14 +64,32 @@ APP_KB=$(du -sk "$APP_PATH" | awk '{print $1}')
 PAD_KB=$(( APP_KB + 20480 ))   # +20 MB padding for filesystem overhead
 RW_DMG="$(mktemp -u)-rw.dmg"
 echo ">> Creating writable DMG ($PAD_KB KB)"
-hdiutil create \
-  -srcfolder "$STAGE" \
-  -volname "$VOLNAME" \
-  -fs HFS+ \
-  -fsargs "-c c=64,a=16,e=16" \
-  -format UDRW \
-  -size "${PAD_KB}k" \
-  "$RW_DMG" >/dev/null
+# `hdiutil create` is famously flaky on the GitHub macOS runners,
+# returning "Resource busy" when Spotlight or some background daemon
+# briefly holds a lock on the staging dir. Retry a handful of times
+# with backoff before declaring it dead — the underlying issue is
+# transient on the order of seconds.
+hdiutil_create() {
+  hdiutil create \
+    -srcfolder "$STAGE" \
+    -volname "$VOLNAME" \
+    -fs HFS+ \
+    -fsargs "-c c=64,a=16,e=16" \
+    -format UDRW \
+    -size "${PAD_KB}k" \
+    "$RW_DMG" >/dev/null
+}
+attempt=1
+until hdiutil_create; do
+  if [[ $attempt -ge 5 ]]; then
+    echo "hdiutil create failed after $attempt attempts" >&2
+    exit 1
+  fi
+  echo "hdiutil create attempt $attempt failed; retrying in $((attempt * 2))s..." >&2
+  rm -f "$RW_DMG"
+  sleep $((attempt * 2))
+  attempt=$((attempt + 1))
+done
 
 # Attach the writable DMG so we can apply Finder layout via AppleScript.
 echo ">> Attaching to apply Finder layout"
