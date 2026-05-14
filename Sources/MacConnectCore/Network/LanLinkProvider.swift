@@ -529,8 +529,25 @@ public final class LanLinkProvider: @unchecked Sendable {
     /// Bump the per-peer dial-failure counter and push out the next
     /// allowed dial time. Shared between the TCP-failure and pre-TLS
     /// close paths.
+    ///
+    /// **Stale-failure guard.** Both call sites can fire after a
+    /// concurrent dial for the same peer has already secured a link:
+    /// in `handleClosed` between releasing the lock and reaching the
+    /// failure path, and in the outbound-connect `whenFailure` callback
+    /// for an older dial whose newer sibling already succeeded. If
+    /// there's a current secure link we treat this failure as stale
+    /// and skip the bump — bumping would re-introduce backoff against
+    /// a peer we just established a healthy connection to.
     private func recordDialFailure(deviceId: String) {
         linkLock.lock()
+        if let existing = linksByDeviceId[deviceId], existing.isSecure {
+            linkLock.unlock()
+            Log.net
+                .debug(
+                    "Skipping stale dial-failure bump for \(deviceId, privacy: .public); secure link exists"
+                )
+            return
+        }
         dialCooldown.recordFailure(deviceId: deviceId)
         let count = dialCooldown.failureCount(deviceId: deviceId)
         linkLock.unlock()
