@@ -18,16 +18,21 @@ public enum PayloadTransport {
 
     // MARK: - Sender
 
-    /// Bind a one-shot TLS listener on a free port in the payload range and
-    /// return the bound port immediately (the future server resolves when
-    /// the file has been streamed and the connection closed).
+    /// Bind a one-shot TLS listener on a free port in the payload range
+    /// and return the bound port immediately along with the completion
+    /// `EventLoopPromise`. Callers attach to `completion.futureResult`
+    /// for success / failure, and may call `completion.fail(_:)` to
+    /// abort early (e.g. when the share.request packet couldn't be
+    /// written because the link wasn't secure). Failing the promise
+    /// also closes the bound listener via the
+    /// `donePromise.futureResult.whenComplete` hook below.
     public static func startSender(
         fileURL: URL,
         peerDeviceId: String,
         onProgress: (@Sendable (Int64) -> Void)? = nil,
         onComplete: @escaping @Sendable () -> Void,
         onError: @escaping @Sendable (Error) -> Void
-    ) -> (port: UInt16, finished: EventLoopFuture<Void>) {
+    ) -> (port: UInt16, completion: EventLoopPromise<Void>) {
         let group = NIOTransport.shared.group
         let context = NIOTransport.shared.sslContext
         let donePromise = group.next().makePromise(of: Void.self)
@@ -97,7 +102,7 @@ public enum PayloadTransport {
                               userInfo: [NSLocalizedDescriptionKey: "No free payload port"])
             onError(err)
             tryFail(err)
-            return (0, donePromise.futureResult)
+            return (0, donePromise)
         }
 
         // After completion, close the server channel.
@@ -119,7 +124,7 @@ public enum PayloadTransport {
             .info(
                 "Payload listener bound on port \(port, privacy: .public) for \(fileURL.lastPathComponent, privacy: .public)"
             )
-        return (port, donePromise.futureResult)
+        return (port, donePromise)
     }
 
     // MARK: - Receiver

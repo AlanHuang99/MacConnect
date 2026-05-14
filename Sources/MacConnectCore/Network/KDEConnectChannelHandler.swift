@@ -182,9 +182,15 @@ public final class KDEConnectChannelHandler: ChannelInboundHandler, @unchecked S
             let leftover = drainBufferAsByteBuffer()
             installSSLHandlerAndReplay(context: context, isServer: false, leftover: leftover)
         case .outbound:
-            // Outbound installs the SSL handler in channelActive; this state
-            // is unreachable for that role.
-            assertionFailure("Outbound role parsed plain identity post-TLS install")
+            // Outbound installs the SSL handler in channelActive; this
+            // state is logically unreachable. assertionFailure was a
+            // crashing trap in DEBUG and a no-op in Release — close
+            // explicitly so a protocol-state regression fails cleanly.
+            Log.net
+                .error(
+                    "Outbound channel reached plain-identity state; closing \(self.peerDeviceId ?? "?", privacy: .public)"
+                )
+            context.close(promise: nil)
         }
     }
 

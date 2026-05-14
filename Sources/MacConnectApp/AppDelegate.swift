@@ -1,4 +1,5 @@
 import AppKit
+import Combine
 import MacConnectCore
 import SwiftUI
 import UserNotifications
@@ -10,6 +11,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var popover: NSPopover!
     private var popoverEventMonitor: Any?
     private var welcomeWindowController: WelcomeWindowController?
+    private var toastSubscription: AnyCancellable?
 
     static func main() {
         let app = NSApplication.shared
@@ -147,6 +149,32 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.behavior = .transient
         popover.contentSize = NSSize(width: 360, height: 500)
         popover.contentViewController = NSHostingController(rootView: StatusView())
+        observeTransferToasts()
+    }
+
+    /// When SharePlugin publishes a Toast (via TransferStore), flash the
+    /// popover open if it's closed and the user is still focused on
+    /// MacConnect. The popover renders the toast banner so the user sees
+    /// "Sent X to Y" / "Send failed" even when system notifications are
+    /// denied (true on ad-hoc-signed dev builds, and any time the user
+    /// chose Don't Allow at the welcome prompt).
+    private func observeTransferToasts() {
+        toastSubscription = TransferStore.shared.$toast
+            .compactMap { $0 }
+            .sink { [weak self] _ in
+                self?.flashPopoverForToast()
+            }
+    }
+
+    private func flashPopoverForToast() {
+        guard let button = statusItem.button else { return }
+        guard !popover.isShown else { return }
+        // Only auto-open if the user is still on us. If they've Cmd-
+        // Tabbed away to another app, surfacing a popover would be a
+        // jarring focus-steal.
+        guard NSApp.isActive else { return }
+        popover.show(relativeTo: button.bounds, of: button, preferredEdge: .minY)
+        installPopoverDismissMonitor()
     }
 
     @objc private func togglePopover() {

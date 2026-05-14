@@ -53,14 +53,20 @@ public final class Device: ObservableObject, Identifiable {
         lastSeen = Date()
     }
 
-    public func send(_ packet: NetworkPacket) {
+    /// Send the packet via the active link. Returns `true` only if the
+    /// link exists AND was secure AND the write was issued. Callers
+    /// like `SharePlugin.sendFile` use the return value to fail their
+    /// transfer immediately instead of waiting on a 60 s receiver
+    /// timeout when the channel is mid-replace or unsecured.
+    @discardableResult
+    public func send(_ packet: NetworkPacket) -> Bool {
         guard let link else {
             Log.net
                 .warning(
                     "Device \(self.id, privacy: .public) has no link; dropping packet \(packet.type, privacy: .public)"
                 )
-            return
+            return false
         }
-        link.send(packet)
+        return link.send(packet)
     }
 }

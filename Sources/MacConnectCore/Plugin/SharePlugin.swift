@@ -122,12 +122,11 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             }
         }
         // Both the handler's onError and the defensive timeout converge on
-        // donePromise (via tryFail), so `finished.whenFailure` is the single
-        // path that fires on any terminal failure. Have the per-callback
-        // closures log only — terminal TransferStore/Notifier/cleanup work
-        // happens exactly once on the future to avoid duplicate "Send
-        // failed" banners that the previous structure produced.
-        let (port, finished) = PayloadTransport.startSender(
+        // donePromise (via tryFail), so `completion.futureResult.whenFailure`
+        // is the single terminal-failure path. Per-callback closures only
+        // log; terminal TransferStore/Notifier/cleanup work happens exactly
+        // once on the future to avoid duplicate "Send failed" banners.
+        let (port, completion) = PayloadTransport.startSender(
             fileURL: url,
             peerDeviceId: device.id,
             onProgress: { bytes in
@@ -142,14 +141,14 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
                 Log.plugin.error("Send failed: \(err.localizedDescription, privacy: .public)")
             }
         )
-        finished.whenSuccess { _ in
+        completion.futureResult.whenSuccess { _ in
             cleanup()
             Task { @MainActor in
                 TransferStore.shared.complete(id: transferId, success: true)
                 await Notifier.show(title: "Sent to \(deviceName)", body: filename)
             }
         }
-        finished.whenFailure { err in
+        completion.futureResult.whenFailure { err in
             cleanup()
             Task { @MainActor in
                 TransferStore.shared.complete(id: transferId, success: false, error: err.localizedDescription)
@@ -157,7 +156,7 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             }
         }
         guard port != 0 else {
-            // Listener bind failed — finished.whenFailure (above) already
+            // Listener bind failed — completion.whenFailure (above) already
             // covers TransferStore + Notifier + cleanup.
             return
         }
@@ -171,7 +170,23 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
         var packet = NetworkPacket(type: PacketType.shareRequest, body: body)
         packet.payloadSize = size
         packet.payloadTransferInfo = ["port": .int(Int64(port))]
-        device.send(packet)
+        if !device.send(packet) {
+            // The link wasn't secure (e.g. mid replaceChannel during a
+            // peer's reconnect cycle). The share.request never went out
+            // so the receiver will never connect back. Fail the transfer
+            // now instead of waiting the full 60 s payload-listener
+            // timeout — the user otherwise sees Send do nothing for a
+            // minute, then a stale "Send failed" notification long
+            // after they moved on.
+            let err = NSError(
+                domain: "MacConnect.Share",
+                code: 3,
+                userInfo: [NSLocalizedDescriptionKey: "Device not ready — try again"]
+            )
+            // Failing the promise also triggers the listener-close hook
+            // wired up inside startSender, so we don't leak the bound port.
+            completion.fail(err)
+        }
     }
 
     // MARK: - Helpers

@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 struct StatusView: View {
     @ObservedObject var manager = DeviceManager.shared
     @ObservedObject var settings = MacConnectCore.Settings.shared
+    @ObservedObject var transfers = TransferStore.shared
     @State private var showingSettings = false
 
     var body: some View {
@@ -16,6 +17,10 @@ struct StatusView: View {
             } else {
                 VStack(alignment: .leading, spacing: 0) {
                     header
+                    if let toast = transfers.toast {
+                        toastBanner(toast)
+                            .transition(.move(edge: .top).combined(with: .opacity))
+                    }
                     Divider()
                     if manager.deviceList().isEmpty {
                         empty
@@ -37,8 +42,48 @@ struct StatusView: View {
             }
         }
         .frame(width: 360, height: 500)
+        .animation(.easeInOut(duration: 0.18), value: transfers.toast?.id)
         .animation(.easeInOut(duration: 0.12), value: showingSettings)
         .onAppear(perform: requestNowPlayingFromPeers)
+    }
+
+    /// Always-visible confirmation that a send/receive completed, even
+    /// when the OS notification path is denied. Auto-clears via
+    /// `TransferStore.toast`'s own timer; the user can also tap the X.
+    private func toastBanner(_ toast: TransferStore.Toast) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 8) {
+            Image(systemName: toast.kind == .success ? "checkmark.circle.fill" : "exclamationmark.triangle.fill")
+                .foregroundStyle(toast.kind == .success ? .green : .orange)
+                .font(.callout)
+            VStack(alignment: .leading, spacing: 1) {
+                Text(toast.message)
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                if let detail = toast.detail {
+                    Text(detail)
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                        .truncationMode(.middle)
+                }
+            }
+            Spacer()
+            Button {
+                transfers.dismissToast()
+            } label: {
+                Image(systemName: "xmark")
+                    .font(.caption2)
+            }
+            .buttonStyle(.borderless)
+            .foregroundStyle(.secondary)
+        }
+        .padding(.horizontal, 12)
+        .padding(.vertical, 8)
+        .background(
+            (toast.kind == .success ? Color.green : Color.orange)
+                .opacity(0.10)
+        )
     }
 
     /// Ask paired-and-online peers to push their current MPRIS / battery
@@ -466,16 +511,31 @@ struct DeviceRow: View {
     }
 
     private func presentFilePicker() {
-        let panel = NSOpenPanel()
-        panel.canChooseFiles = true
-        panel.canChooseDirectories = false
-        panel.allowsMultipleSelection = false
-        panel.title = "Send file to \(device.name)"
-        panel.prompt = "Send"
-        panel.begin { result in
-            guard result == .OK, let url = panel.url else { return }
-            Task { @MainActor in
-                SharePlugin.sendFile(url, to: device)
+        // Hop off the SwiftUI button-action stack so the popover can
+        // finish its own dismissal animation BEFORE the picker comes
+        // up. Without this, the picker on the second invocation often
+        // opens with disabled controls (the popover, mid-animation,
+        // is still partially the key window — clicks in the picker get
+        // routed nowhere).
+        DispatchQueue.main.async {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = true
+            panel.canChooseDirectories = false
+            panel.allowsMultipleSelection = false
+            panel.allowsOtherFileTypes = true
+            panel.treatsFilePackagesAsDirectories = false
+            panel.title = "Send file to \(device.name)"
+            panel.prompt = "Send"
+            // Accessory apps (LSUIElement) must explicitly activate
+            // before presenting a modal panel, otherwise the panel can
+            // open without a key window and its controls render
+            // disabled.
+            NSApp.activate(ignoringOtherApps: true)
+            panel.begin { [device] result in
+                guard result == .OK, let url = panel.url else { return }
+                Task { @MainActor in
+                    SharePlugin.sendFile(url, to: device)
+                }
             }
         }
     }

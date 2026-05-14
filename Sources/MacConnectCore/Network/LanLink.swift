@@ -47,12 +47,23 @@ public final class LanLink: @unchecked Sendable {
         return channel
     }
 
-    /// Replace the active channel with a newer secured connection. The old
+    /// Replace the active channel with a newer connection. The old
     /// channel is closed; the new one becomes the send target.
+    ///
+    /// `_isSecure` is reset to `false` because the new channel has not
+    /// completed its TLS handshake yet. Without this reset, `send()`
+    /// would happily write to the new channel during the ~50–100 ms
+    /// pre-handshake window; NIOSSL would buffer the plaintext and
+    /// silently drop it if the new channel never reaches handshake (the
+    /// observed cause of intermittent "send file" failures with peers
+    /// like the KDE Connect iOS app that cycle TCP every 5 s). The
+    /// flag flips back to `true` when LanLinkProvider.handleSecured
+    /// fires for the new channel.
     public func replaceChannel(with newChannel: Channel) {
         lock.lock()
         let old = channel
         channel = newChannel
+        _isSecure = false
         lock.unlock()
         if old !== newChannel {
             old.close(promise: nil)
@@ -81,7 +92,13 @@ public final class LanLink: @unchecked Sendable {
         activeChannel.close(promise: nil)
     }
 
-    public func send(_ packet: NetworkPacket) {
+    /// Hand the packet to NIO. Returns `true` if the link was secure
+    /// AND the write was issued (the actual flush is observed
+    /// asynchronously and logged); returns `false` if the link wasn't
+    /// secure or serialization failed, so callers can fail fast instead
+    /// of waiting on a downstream timeout.
+    @discardableResult
+    public func send(_ packet: NetworkPacket) -> Bool {
         let secure: Bool
         let ch: Channel
         lock.lock()
@@ -94,7 +111,7 @@ public final class LanLink: @unchecked Sendable {
                 .warning(
                     "Refusing to send \(packet.type, privacy: .public) before TLS for \(self.deviceId, privacy: .public)"
                 )
-            return
+            return false
         }
         do {
             let data = try packet.serialized()
@@ -102,7 +119,7 @@ public final class LanLink: @unchecked Sendable {
             buf.writeBytes(data)
             let promise = ch.eventLoop.makePromise(of: Void.self)
             ch.writeAndFlush(buf, promise: promise)
-            let deviceId = deviceId
+            let deviceId = self.deviceId
             let type = packet.type
             promise.futureResult.whenComplete { result in
                 switch result {
@@ -115,11 +132,13 @@ public final class LanLink: @unchecked Sendable {
                         )
                 }
             }
+            return true
         } catch {
             Log.net
                 .error(
                     "Serialize failed for \(packet.type, privacy: .public): \(error.localizedDescription, privacy: .public)"
                 )
+            return false
         }
     }
 }
