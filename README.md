@@ -13,24 +13,20 @@ Working features:
 - Plugins:
   - Ping (send + receive, banner notification on receive).
   - Clipboard (manual push on outbound; auto-apply on inbound; image fallback sends the pasteboard image as a `clipboard-<uuid>.png` file payload when no text is present).
-  - Notifications (receive Android notifications as macOS banners, with inline Reply for notifications that carry a `requestReplyId`).
-  - Find My Phone (ring outbound).
   - Share (URL, text, and file payload — send and receive over a second TLS connection).
-  - MPRIS (now-playing tile in the device row with title/artist, Play-Pause, Next, Previous; control buttons disable when the peer reports the action as unsupported).
   - Battery (peer's percent + charging indicator shown on the device row when paired and online).
 - Menu-bar UI: popover lists discovered devices with pair status, last-seen age for offline peers, paired-first ordering, and per-device actions. Active file transfers render an inline progress bar; the Settings panel keeps the last 20 completed transfers. Devices accept file drops directly when paired and online.
 - Connection lifecycle: TCP `SO_KEEPALIVE` plus Darwin `TCP_KEEPALIVE`/`KEEPINTVL`/`KEEPCNT` (30 / 10 / 3) so dead sockets are detected in ~60 s; a NIO `IdleStateHandler` (300 s) is the wedged-socket safety net. No app-layer heartbeat — KDE Connect peers treat unknown `kdeconnect.ping` flags as ordinary pings and would show a notification for each one.
 - Settings panel: editable broadcast name, SHA-256 fingerprint display (local + per pinned peer, with Copy buttons), per-plugin enable/disable toggles, per-device plugin overrides on each trusted-device row, Launch-at-Login toggle, pinned-device list with Forget action, Recent Transfers, and an About section with version + GitHub link.
-- "Send via MacConnect" Finder Services entry (right-click any file → Services → Send via MacConnect → pick a paired device).
 - mDNS / Bonjour discovery (`_kdeconnect._udp`) alongside legacy UDP broadcast — finds peers across access points and on networks where broadcast is filtered.
-- Localization scaffolding: `Localizable.xcstrings` with an `en` baseline; the SwiftPM resource bundle is copied into `MacConnect.app/Contents/Resources/` by `scripts/build-app.sh` so `Bundle.module` lookups resolve at runtime. No non-English translations are shipped yet.
-- Distribution: Release workflow builds a universal binary, signs with Apple Developer ID + Hardened Runtime, notarizes via App Store Connect API key, staples the ticket, and publishes a `.dmg` + `.zip` to a GitHub Release.
+- Distribution: Release workflow builds an Apple Silicon binary, signs with Apple Developer ID + Hardened Runtime, notarizes via App Store Connect API key, staples the ticket, and publishes a `.dmg` + `.zip` to a GitHub Release.
 
 Not implemented yet:
 
-- macOS Share Extension proper (the modern Share sheet entry). The current Services menu integration is the practical equivalent; a real `.appex` Share Extension requires app-extension build tooling that SwiftPM doesn't support natively.
+- macOS Share Extension proper (the modern Share sheet entry). File transfer currently lives in the menu-bar UI via the Send button and file drop.
 - KDE Connect protocol v8 (post-TLS identity re-keying). The v7 implementation here interoperates with v7 peers; v8 is forward-compatibility only.
-- Non-English localizations. The catalog and lookup wiring are in place; entries beyond `en` are not yet provided.
+- Notification mirroring, Find My Phone, and media controls. These were intentionally removed from the active app surface while stabilizing the core clipboard and file-transfer workflows.
+- Non-English localizations.
 
 See [`ROADMAP.md`](ROADMAP.md) for upcoming work.
 
@@ -53,11 +49,11 @@ The binary is built for Apple Silicon Macs and requires macOS 13 or later.
 ## Build and run
 
 ```bash
-# Assemble a .app bundle
-./scripts/build-app.sh release
-
 # Apple Silicon release build
 ./scripts/build-app.sh release-arm64 0.1.0
+
+# Assemble a debug .app bundle for local UI work
+./scripts/build-app.sh debug
 
 # Launch
 open build/MacConnect.app
@@ -93,12 +89,11 @@ Sources/
       CertificateService.swift # local cert + pinned-peer store
       NetworkInterfaces.swift  # getifaddrs broadcast enumeration
     Device/                    # Device, DeviceManager
-    Plugin/                    # Plugin protocol, registry, plugin implementations, TransferStore, MprisStore, BatteryStore
+    Plugin/                    # Plugin protocol, registry, clipboard/share/ping/battery plugins, TransferStore, BatteryStore
   MacConnectApp/
-    Resources/Localizable.xcstrings  # en baseline; SwiftPM-processed
     *.swift                          # menu-bar executable (AppKit + SwiftUI popover)
 Tests/MacConnectCoreTests/     # XCTest: packet round-trips, pair timestamp, PeerVerifier, EmbeddedChannel handler
-scripts/build-app.sh           # assembles MacConnect.app from the executable + copies SwiftPM resource bundle
+scripts/build-app.sh           # assembles MacConnect.app from the executable
 .github/workflows/             # CI (build+test, lint)
 ```
 

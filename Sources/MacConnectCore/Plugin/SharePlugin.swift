@@ -122,11 +122,11 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             }
         }
         // Both the handler's onError and the defensive timeout converge on
-        // donePromise (via tryFail), so `completion.futureResult.whenFailure`
-        // is the single terminal-failure path. Per-callback closures only
-        // log; terminal TransferStore/Notifier/cleanup work happens exactly
-        // once on the future to avoid duplicate "Send failed" banners.
-        let (port, completion) = PayloadTransport.startSender(
+        // the completion future, so `completion.whenFailure` is the single
+        // terminal-failure path. Per-callback closures only log; terminal
+        // TransferStore/Notifier/cleanup work happens exactly once on the
+        // future to avoid duplicate "Send failed" banners.
+        let (port, completion, cancel) = PayloadTransport.startSender(
             fileURL: url,
             peerDeviceId: device.id,
             onProgress: { bytes in
@@ -141,14 +141,14 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
                 Log.plugin.error("Send failed: \(err.localizedDescription, privacy: .public)")
             }
         )
-        completion.futureResult.whenSuccess { _ in
+        completion.whenSuccess { _ in
             cleanup()
             Task { @MainActor in
                 TransferStore.shared.complete(id: transferId, success: true)
                 await Notifier.show(title: "Sent to \(deviceName)", body: filename)
             }
         }
-        completion.futureResult.whenFailure { err in
+        completion.whenFailure { err in
             cleanup()
             Task { @MainActor in
                 TransferStore.shared.complete(id: transferId, success: false, error: err.localizedDescription)
@@ -185,7 +185,7 @@ public final class SharePlugin: Plugin, @unchecked Sendable {
             )
             // Failing the promise also triggers the listener-close hook
             // wired up inside startSender, so we don't leak the bound port.
-            completion.fail(err)
+            cancel(err)
         }
     }
 

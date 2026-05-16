@@ -25,11 +25,13 @@ public enum PayloadTransport {
 
     /// Bind a one-shot TLS listener on a free port in the payload range
     /// and return the bound port immediately along with the completion
-    /// `EventLoopPromise`. Callers attach to `completion.futureResult`
-    /// for success / failure, and may call `completion.fail(_:)` to
-    /// abort early (e.g. when the share.request packet couldn't be
-    /// written because the link wasn't secure). Failing the promise
-    /// also closes the bound listener via the
+    /// `EventLoopFuture`. Callers attach to `completion` for success /
+    /// failure, and may call `cancel(_:)` to abort early (e.g. when the
+    /// share.request packet couldn't be written because the link wasn't
+    /// secure). Cancellation is guarded through the same single-completion
+    /// path as handler success/failure so racing terminal paths cannot
+    /// double-fulfil the underlying NIO promise. Completion also closes
+    /// the bound listener via the
     /// `donePromise.futureResult.whenComplete` hook below.
     public static func startSender(
         fileURL: URL,
@@ -37,7 +39,7 @@ public enum PayloadTransport {
         onProgress: (@Sendable (Int64) -> Void)? = nil,
         onComplete: @escaping @Sendable () -> Void,
         onError: @escaping @Sendable (Error) -> Void
-    ) -> (port: UInt16, completion: EventLoopPromise<Void>) {
+    ) -> (port: UInt16, completion: EventLoopFuture<Void>, cancel: @Sendable (Error) -> Void) {
         let group = NIOTransport.shared.group
         let context = NIOTransport.shared.sslContext
         let donePromise = group.next().makePromise(of: Void.self)
@@ -113,7 +115,7 @@ public enum PayloadTransport {
             registry.unregisterCancellation(cancellationId)
             onError(err)
             tryFail(err)
-            return (0, donePromise)
+            return (0, donePromise.futureResult, tryFail)
         }
 
         registry.track(serverChannel)
@@ -140,7 +142,7 @@ public enum PayloadTransport {
                 "Payload listener bound on port \(port, privacy: .public) for \(fileURL.lastPathComponent, privacy: .public)"
             )
         DiagnosticLog.shared.record("payload", "sender-listener port=\(port) peer=\(peerDeviceId)")
-        return (port, donePromise)
+        return (port, donePromise.futureResult, tryFail)
     }
 
     // MARK: - Receiver

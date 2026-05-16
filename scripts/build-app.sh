@@ -53,21 +53,6 @@ rm -rf "$APP"
 mkdir -p "$MACOS" "$RES"
 cp "$BIN_PATH" "$MACOS/MacConnect"
 
-# SwiftPM generates one bundle per target with declared resources. The
-# MacConnectApp target's bundle holds Localizable.xcstrings; copy it
-# inside the .app so Bundle.module lookups work at runtime.
-# Hard-fail if the bundle is missing — runtime Text(_:bundle: .module)
-# lookups crash without it (Bundle.module accessor calls fatalError on
-# absence) and we'd ship a broken .app that CI still marked green.
-SPM_BUNDLE="$BIN_DIR/MacConnect_MacConnectApp.bundle"
-if [[ ! -d "$SPM_BUNDLE" ]]; then
-  echo "ERROR: SwiftPM resource bundle not found at $SPM_BUNDLE." >&2
-  echo "       Sources/MacConnectApp/Resources/ must be declared in Package.swift" >&2
-  echo "       and at least one resource file present so SwiftPM emits the bundle." >&2
-  exit 1
-fi
-cp -R "$SPM_BUNDLE" "$RES/"
-
 ICON_SRC="$ROOT/resources/AppIcon.icns"
 if [[ ! -f "$ICON_SRC" ]]; then
   echo ">> Icon not found; generating via scripts/make-icon.swift"
@@ -99,19 +84,6 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <string>MacConnect discovers KDE Connect devices on your local network.</string>
     <key>NSBonjourServices</key>
     <array><string>_kdeconnect._udp</string></array>
-    <key>NSServices</key>
-    <array>
-        <dict>
-            <key>NSMenuItem</key>
-            <dict><key>default</key><string>Send via MacConnect</string></dict>
-            <key>NSMessage</key>
-            <string>sendFileToDevice</string>
-            <key>NSPortName</key>
-            <string>MacConnect</string>
-            <key>NSSendTypes</key>
-            <array><string>public.file-url</string></array>
-        </dict>
-    </array>
 </dict>
 </plist>
 EOF

@@ -135,8 +135,9 @@ public final class LanLinkProvider: @unchecked Sendable {
         mdnsBrowser = nil
         // Close the broadcast socket on its owning queue so a concurrent
         // broadcastIdentity tick can't sendto() a descriptor that was just
-        // closed (or already recycled for another resource).
-        queue.sync {
+        // closed (or already recycled for another resource). This is async
+        // on purpose: Quit must never block behind a stuck discovery task.
+        queue.async {
             if self.broadcastFD >= 0 {
                 close(self.broadcastFD)
                 self.broadcastFD = -1

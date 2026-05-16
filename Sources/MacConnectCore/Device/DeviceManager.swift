@@ -37,12 +37,6 @@ public final class DeviceManager: ObservableObject {
         guard let device = devices[deviceId] else { return }
         device.link = nil
         device.isReachable = false
-        // Clear cached now-playing state so a stale title doesn't keep
-        // showing when the peer reconnects but hasn't pushed a fresh
-        // MPRIS packet yet. Cleared here rather than in unpair only —
-        // every disconnect should invalidate the now-playing cache,
-        // not just an explicit unpair.
-        MprisStore.shared.clear(deviceId: deviceId)
         objectWillChange.send()
     }
 
@@ -100,7 +94,6 @@ public final class DeviceManager: ObservableObject {
         device.incomingPairRequest = false
         device.pinMismatch = false
         device.presentedFingerprint = nil
-        MprisStore.shared.clear(deviceId: device.id)
         LanLinkProvider.shared.disconnect(deviceId: device.id, reason: "local-unpair")
         objectWillChange.send()
     }

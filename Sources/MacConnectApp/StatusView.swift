@@ -44,7 +44,7 @@ struct StatusView: View {
         .frame(width: 360, height: 500)
         .animation(.easeInOut(duration: 0.18), value: transfers.toast?.id)
         .animation(.easeInOut(duration: 0.12), value: showingSettings)
-        .onAppear(perform: requestNowPlayingFromPeers)
+        .onAppear(perform: requestBatteryFromPeers)
     }
 
     /// Always-visible confirmation that a send/receive completed, even
@@ -86,18 +86,12 @@ struct StatusView: View {
         )
     }
 
-    /// Ask paired-and-online peers to push their current MPRIS / battery
-    /// state so tiles aren't blank on first popover open. Both calls are
-    /// gated on the per-device + global plugin enable state — without that
-    /// gate we'd send unsolicited plugin traffic to peers the user
-    /// explicitly muted for those plugins, contradicting the per-device
-    /// override settings.
-    private func requestNowPlayingFromPeers() {
+    /// Ask paired-and-online peers to push their current battery state so
+    /// rows aren't blank on first popover open. The call is gated on the
+    /// per-device + global plugin enable state.
+    private func requestBatteryFromPeers() {
         for device in manager.deviceList() where device.isPaired && device.isReachable {
             let id = device.id
-            if MacConnectCore.Settings.shared.isPluginEnabled("mpris", forDevice: id) {
-                MprisPlugin.requestNowPlaying(from: device)
-            }
             if MacConnectCore.Settings.shared.isPluginEnabled("battery", forDevice: id) {
                 BatteryPlugin.requestUpdate(from: device)
             }
@@ -117,7 +111,7 @@ struct StatusView: View {
     private var header: some View {
         HStack {
             Image(systemName: "iphone.radiowaves.left.and.right")
-            Text("MacConnect", bundle: .module).font(.headline)
+            Text("MacConnect").font(.headline)
             Spacer()
             Button {
                 LanLinkProvider.shared.refresh()
@@ -145,7 +139,7 @@ struct StatusView: View {
             Image(systemName: "antenna.radiowaves.left.and.right")
                 .font(.system(size: 40))
                 .foregroundStyle(.secondary)
-            Text("Searching for devices…", bundle: .module)
+            Text("Searching for devices…")
                 .foregroundStyle(.secondary)
             VStack(alignment: .leading, spacing: 4) {
                 checklistItem("KDE Connect is running on the other device")
@@ -187,7 +181,6 @@ struct StatusView: View {
 struct DeviceRow: View {
     @ObservedObject var device: Device
     @ObservedObject private var transfers = TransferStore.shared
-    @ObservedObject private var mpris = MprisStore.shared
     @ObservedObject private var battery = BatteryStore.shared
     @State private var isDropTarget: Bool = false
 
@@ -209,10 +202,6 @@ struct DeviceRow: View {
                 pairPrompt
             } else if !device.isPaired {
                 unpairedActions
-            }
-
-            if device.isPaired, device.isReachable, let mprisState = mpris.state(for: device.id) {
-                mprisTile(mprisState)
             }
 
             ForEach(transfers.activeTransfers(forDeviceId: device.id)) { transfer in
@@ -258,7 +247,6 @@ struct DeviceRow: View {
         Menu {
             Button("Ping") { PingPlugin.send(to: device) }
             Button("Push Clipboard") { ClipboardPlugin.pushClipboard(to: device) }
-            Button("Find My Phone") { FindMyPhonePlugin.ring(device) }
             Divider()
             Button("Unpair", role: .destructive) { DeviceManager.shared.unpair(device) }
         } label: {
@@ -288,39 +276,6 @@ struct DeviceRow: View {
         } else {
             Color.clear
         }
-    }
-
-    private func mprisTile(_ state: MprisStore.State) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let line = state.titleLine {
-                Text(line)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            HStack(spacing: 4) {
-                Text(state.player)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button { MprisPlugin.previous(device) } label: {
-                    Image(systemName: "backward.fill")
-                }
-                .disabled(!state.canGoPrevious)
-                Button { MprisPlugin.playPause(device) } label: {
-                    Image(systemName: state.isPlaying ? "pause.fill" : "play.fill")
-                }
-                .disabled(state.isPlaying ? !state.canPause : !state.canPlay)
-                Button { MprisPlugin.next(device) } label: {
-                    Image(systemName: "forward.fill")
-                }
-                .disabled(!state.canGoNext)
-            }
-            .controlSize(.small)
-            .buttonStyle(.borderless)
-        }
-        .padding(8)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func transferRow(_ transfer: TransferStore.Transfer) -> some View {
@@ -363,16 +318,8 @@ struct DeviceRow: View {
             accepted = true
             // URL conforms to NSItemProviderReading on macOS, which handles
             // both single-file drops and folder/archive payloads correctly.
-            // loadDataRepresentation alone would silently no-op on payloads
-            // that arrive as a zip archive (Finder folder drag) — accepted
-            // would be true but no transfer would ever start.
             _ = provider.loadObject(ofClass: URL.self) { url, _ in
                 guard let url else { return }
-                // Directories arrive as fileURL payloads but
-                // PayloadSenderHandler opens with FileHandle(forReadingFrom:)
-                // which fails on directories — silently turning an accepted
-                // drop into a failed transfer. Skip directories so the user
-                // sees a no-op rather than a failure notification.
                 var isDir: ObjCBool = false
                 guard FileManager.default.fileExists(atPath: url.path, isDirectory: &isDir),
                       !isDir.boolValue else { return }
@@ -510,36 +457,6 @@ struct DeviceRow: View {
         }
     }
 
-    private func presentFilePicker() {
-        // Hop off the SwiftUI button-action stack so the popover can
-        // finish its own dismissal animation BEFORE the picker comes
-        // up. Without this, the picker on the second invocation often
-        // opens with disabled controls (the popover, mid-animation,
-        // is still partially the key window — clicks in the picker get
-        // routed nowhere).
-        DispatchQueue.main.async {
-            let panel = NSOpenPanel()
-            panel.canChooseFiles = true
-            panel.canChooseDirectories = false
-            panel.allowsMultipleSelection = false
-            panel.allowsOtherFileTypes = true
-            panel.treatsFilePackagesAsDirectories = false
-            panel.title = "Send file to \(device.name)"
-            panel.prompt = "Send"
-            // Accessory apps (LSUIElement) must explicitly activate
-            // before presenting a modal panel, otherwise the panel can
-            // open without a key window and its controls render
-            // disabled.
-            NSApp.activate(ignoringOtherApps: true)
-            panel.begin { [device] result in
-                guard result == .OK, let url = panel.url else { return }
-                Task { @MainActor in
-                    SharePlugin.sendFile(url, to: device)
-                }
-            }
-        }
-    }
-
     private var unpairedActions: some View {
         HStack {
             if device.outgoingPairRequest {
@@ -557,5 +474,27 @@ struct DeviceRow: View {
             }
         }
         .controlSize(.small)
+    }
+
+    private func presentFilePicker() {
+        // Hop off the SwiftUI button-action stack so the popover can finish
+        // its own dismissal animation before the picker comes up.
+        DispatchQueue.main.async {
+            let panel = NSOpenPanel()
+            panel.canChooseFiles = true
+            panel.canChooseDirectories = false
+            panel.allowsMultipleSelection = false
+            panel.allowsOtherFileTypes = true
+            panel.treatsFilePackagesAsDirectories = false
+            panel.title = "Send file to \(device.name)"
+            panel.prompt = "Send"
+            NSApp.activate(ignoringOtherApps: true)
+            panel.begin { [device] result in
+                guard result == .OK, let url = panel.url else { return }
+                Task { @MainActor in
+                    SharePlugin.sendFile(url, to: device)
+                }
+            }
+        }
     }
 }

@@ -45,12 +45,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
 
-        // Services rescan is a full Launch Services walk; defer it a beat
-        // and only run when the Info.plist NSServices block actually
-        // changed since the last launch.
-        Task.detached(priority: .utility) {
-            await MainActor.run { Self.registerServicesIfNeeded() }
-        }
     }
 
     func applicationWillTerminate(_: Notification) {
@@ -63,35 +57,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         LanLinkProvider.shared.stop(deadline: .now() + 0.75)
         NIOTransport.shared.shutdown(deadline: .now() + 0.5)
         DiagnosticLog.shared.recordSync("app", "terminate-end")
-    }
-
-    private static func registerServicesIfNeeded() {
-        NSApp.servicesProvider = sharedDelegate
-        // Hash the NSServices array; only rescan when it changed. A full
-        // NSUpdateDynamicServices() call is multi-second on first launch
-        // and was running every cold start in 0.2.x.
-        let fingerprint = Self.servicesFingerprint()
-        let key = "macconnect.servicesFingerprint"
-        if UserDefaults.standard.string(forKey: key) == fingerprint {
-            return
-        }
-        NSUpdateDynamicServices()
-        UserDefaults.standard.set(fingerprint, forKey: key)
-    }
-
-    private static var sharedDelegate: AppDelegate? {
-        NSApp.delegate as? AppDelegate
-    }
-
-    private static func servicesFingerprint() -> String {
-        // Stable hash of the NSServices array. If it ever stops matching
-        // the value in Info.plist, the next launch will trigger a rescan.
-        guard let services = Bundle.main.object(forInfoDictionaryKey: "NSServices") as? [Any],
-              let data = try? PropertyListSerialization.data(fromPropertyList: services, format: .binary, options: 0)
-        else {
-            return "missing"
-        }
-        return data.base64EncodedString()
     }
 
     private func showWelcomeWindowIfFirstRun() {
@@ -110,9 +75,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         let registry = PluginRegistry.shared
         registry.register(PingPlugin())
         registry.register(ClipboardPlugin())
-        registry.register(NotificationPlugin())
-        registry.register(FindMyPhonePlugin())
-        registry.register(MprisPlugin())
         registry.register(BatteryPlugin())
         registry.register(SharePlugin())
     }
@@ -156,12 +118,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         observeTransferToasts()
     }
 
-    /// When SharePlugin publishes a Toast (via TransferStore), flash the
-    /// popover open if it's closed and the user is still focused on
-    /// MacConnect. The popover renders the toast banner so the user sees
-    /// "Sent X to Y" / "Send failed" even when system notifications are
-    /// denied (true on ad-hoc-signed dev builds, and any time the user
-    /// chose Don't Allow at the welcome prompt).
+    /// When a command publishes a toast, flash the popover open if it's
+    /// closed and the user is still focused on MacConnect. This gives
+    /// immediate feedback even when system notifications are denied.
     private func observeTransferToasts() {
         toastSubscription = TransferStore.shared.$toast
             .compactMap { $0 }
@@ -216,63 +175,6 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    // MARK: - Services menu handler
-
-    /// Invoked by macOS when the user picks "Send via MacConnect" from a
-    /// file's Services submenu. Signature is dictated by the NSServices
-    /// API; the method name (sans Swift translation) is referenced from
-    /// the NSMessage key in Info.plist as `sendFileToDevice`.
-    @objc
-    func sendFileToDevice(
-        _ pasteboard: NSPasteboard,
-        userData _: String?,
-        error: AutoreleasingUnsafeMutablePointer<NSString>
-    ) {
-        let urls = pasteboard.readObjects(forClasses: [NSURL.self], options: nil) as? [URL] ?? []
-        guard !urls.isEmpty else {
-            error.pointee = "No files in selection" as NSString
-            return
-        }
-        Task { @MainActor in
-            await chooseDeviceAndSend(urls: urls)
-        }
-    }
-
-    @MainActor
-    private func chooseDeviceAndSend(urls: [URL]) async {
-        NSApp.activate(ignoringOtherApps: true)
-
-        let candidates = DeviceManager.shared.deviceList()
-            .filter { $0.isPaired && $0.isReachable }
-        if candidates.isEmpty {
-            let alert = NSAlert()
-            alert.messageText = "No paired devices online"
-            alert.informativeText = "Pair and connect a device in MacConnect, then try again."
-            alert.runModal()
-            return
-        }
-
-        let alert = NSAlert()
-        alert.messageText = "Send to which device?"
-        alert.informativeText = urls.count == 1
-            ? urls[0].lastPathComponent
-            : "\(urls.count) files"
-        for device in candidates {
-            alert.addButton(withTitle: device.name)
-        }
-        alert.addButton(withTitle: "Cancel")
-        let response = alert.runModal()
-        let firstDeviceCode = NSApplication.ModalResponse.alertFirstButtonReturn.rawValue
-        let idx = response.rawValue - firstDeviceCode
-        guard idx >= 0, idx < candidates.count else { return }
-        let target = candidates[idx]
-        for url in urls {
-            SharePlugin.sendFile(url, to: target)
-        }
-        Log.plugin
-            .info("Queued \(urls.count, privacy: .public) file(s) via Services menu to \(target.id, privacy: .public)")
-    }
-
     // MARK: - UNUserNotificationCenterDelegate
 
     nonisolated func userNotificationCenter(
@@ -286,33 +188,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
     nonisolated func userNotificationCenter(
         _: UNUserNotificationCenter,
-        didReceive response: UNNotificationResponse,
+        didReceive _: UNNotificationResponse,
         withCompletionHandler completionHandler: @escaping @Sendable () -> Void
     ) {
-        let actionId = response.actionIdentifier
-        let userInfo = response.notification.request.content.userInfo
-        let deviceId = userInfo[Notifier.userInfoDeviceId] as? String
-        let replyId = userInfo[Notifier.userInfoRequestReplyId] as? String
-        let userText = (response as? UNTextInputNotificationResponse)?.userText
-
-        Task { @MainActor in
-            defer { completionHandler() }
-            guard actionId == Notifier.replyActionIdentifier,
-                  let deviceId, let replyId,
-                  let userText, !userText.isEmpty,
-                  let device = DeviceManager.shared.devices[deviceId]
-            else { return }
-            guard device.isReachable else {
-                Log.plugin.notice("Drop notification reply for offline device \(deviceId, privacy: .public)")
-                await Notifier.show(title: "Reply not sent", body: "Device is offline")
-                return
-            }
-            if device.send(NotificationPlugin.replyPacket(requestReplyId: replyId, message: userText)) {
-                Log.plugin.info("Sent notification reply to \(deviceId, privacy: .public)")
-            } else {
-                Log.plugin.notice("Notification reply not sent to \(deviceId, privacy: .public)")
-                await Notifier.show(title: "Reply not sent", body: "Device not ready")
-            }
-        }
+        completionHandler()
     }
 }

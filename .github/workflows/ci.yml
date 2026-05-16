@@ -38,6 +38,13 @@ jobs:
       - name: Run tests
         run: swift test --parallel
 
+      - name: Guard brittle app resources
+        run: |
+          if grep -R -n -E 'Bundle\.module|bundle: \.module' Sources; then
+            echo "Do not use Bundle.module from app UI code; missing SwiftPM resource bundles crash at runtime." >&2
+            exit 1
+          fi
+
       - name: Build (release)
         run: swift build -c release
 
@@ -49,6 +56,11 @@ jobs:
           test -f build/MacConnect.app/Contents/MacOS/MacConnect
           test -f build/MacConnect.app/Contents/Info.plist
           plutil -lint build/MacConnect.app/Contents/Info.plist
+          test ! -d build/MacConnect.app/Contents/Resources/MacConnect_MacConnectApp.bundle
+          if /usr/libexec/PlistBuddy -c 'Print :NSServices' build/MacConnect.app/Contents/Info.plist >/dev/null 2>&1; then
+            echo "NSServices should stay out of the generated app until the Services path has dedicated tests." >&2
+            exit 1
+          fi
 
   lint:
     name: Lint
