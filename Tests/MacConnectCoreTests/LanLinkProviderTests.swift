@@ -74,6 +74,31 @@ final class LanLinkProviderTests: XCTestCase {
         XCTAssertTrue(link.activeChannel === candidate)
     }
 
+    func testReplacingPendingCandidateDoesNotDeadlockOnCloseCallback() throws {
+        let provider = LanLinkProvider()
+        let identity = Self.makeIdentity(deviceId: "test-replace-pending-\(UUID().uuidString)")
+        let active = EmbeddedChannel()
+        let staleCandidate = EmbeddedChannel()
+        let replacementCandidate = EmbeddedChannel()
+        defer {
+            _ = try? active.finish()
+            _ = try? staleCandidate.finish()
+            _ = try? replacementCandidate.finish()
+        }
+
+        provider.handleIdentity(identity, channel: active)
+        provider.handleSecured(channel: active)
+        provider.handleIdentity(identity, channel: staleCandidate)
+
+        staleCandidate.closeFuture.whenComplete { _ in
+            provider.handleClosed(channel: staleCandidate)
+        }
+
+        provider.handleIdentity(identity, channel: replacementCandidate)
+
+        XCTAssertEqual(provider.debugSnapshot().pendingDeviceIds, Set([identity.deviceId]))
+    }
+
     private static func makeIdentity(deviceId: String) -> IdentityPayload {
         IdentityPayload(
             deviceId: deviceId,

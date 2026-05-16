@@ -306,9 +306,10 @@ public final class LanLinkProvider: @unchecked Sendable {
             }
 
             if existing.isSecure {
-                registerPendingLocked(identity: identity, channel: channel)
+                let oldPendingChannel = registerPendingLocked(identity: identity, channel: channel)
                 let pendingCount = pendingByDeviceId.count
                 linkLock.unlock()
+                oldPendingChannel?.close(promise: nil)
                 Log.net.info("Registered pending replacement for \(identity.deviceId, privacy: .public)")
                 DiagnosticLog.shared.record(
                     "net",
@@ -323,10 +324,11 @@ public final class LanLinkProvider: @unchecked Sendable {
             // There is no usable secure channel yet. Replace the pre-TLS
             // attempt and let the generic TLS deadline close it if it stalls.
             let oldChannel = existing.activeChannel
-            existing.replaceChannel(with: channel, secure: false)
+            let displacedChannel = existing.replaceChannel(with: channel, secure: false)
             activeChannelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
             activeChannelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
             linkLock.unlock()
+            displacedChannel?.close(promise: nil)
             Log.net.info("Replaced pre-secure channel for existing link \(identity.deviceId, privacy: .public)")
             DiagnosticLog.shared.record("net", "presecure-replaced device=\(identity.deviceId)")
             Task { @MainActor in
@@ -365,15 +367,17 @@ public final class LanLinkProvider: @unchecked Sendable {
         }
     }
 
-    private func registerPendingLocked(identity: IdentityPayload, channel: Channel) {
+    private func registerPendingLocked(identity: IdentityPayload, channel: Channel) -> Channel? {
+        var displacedChannel: Channel?
         if let old = pendingByDeviceId.removeValue(forKey: identity.deviceId) {
             pendingChannelToDeviceId.removeValue(forKey: ObjectIdentifier(old.channel))
             if old.channel !== channel {
-                old.channel.close(promise: nil)
+                displacedChannel = old.channel
             }
         }
         pendingByDeviceId[identity.deviceId] = PendingLink(identity: identity, channel: channel)
         pendingChannelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
+        return displacedChannel
     }
 
     private func handlePacket(_ packet: NetworkPacket, channel: Channel) {
@@ -398,9 +402,10 @@ public final class LanLinkProvider: @unchecked Sendable {
             let oldChannel = link.activeChannel
             activeChannelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
             activeChannelToDeviceId[channelId] = deviceId
-            link.replaceChannel(with: pending.channel, secure: true)
+            let displacedChannel = link.replaceChannel(with: pending.channel, secure: true)
             dialCooldown.clear(deviceId: deviceId)
             linkLock.unlock()
+            displacedChannel?.close(promise: nil)
             Log.net.info("Promoted pending link after TLS: \(deviceId, privacy: .public)")
             DiagnosticLog.shared.record("net", "candidate-promoted device=\(deviceId)")
             Task { @MainActor in

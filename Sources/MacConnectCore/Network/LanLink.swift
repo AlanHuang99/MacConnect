@@ -47,18 +47,18 @@ public final class LanLink: @unchecked Sendable {
         return channel
     }
 
-    /// Replace the active channel with a newer connection. The old
-    /// channel is closed; the new one becomes the send target. Callers
-    /// must pass whether the replacement has already completed TLS.
-    public func replaceChannel(with newChannel: Channel, secure: Bool = false) {
+    /// Replace the active channel with a newer connection. The new one
+    /// becomes the send target. The displaced channel is returned so the
+    /// provider can close it after releasing its own locks; closing a NIO
+    /// channel can synchronously fire callbacks back into the provider.
+    @discardableResult
+    public func replaceChannel(with newChannel: Channel, secure: Bool = false) -> Channel? {
         lock.lock()
         let old = channel
         channel = newChannel
         _isSecure = secure
         lock.unlock()
-        if old !== newChannel {
-            old.close(promise: nil)
-        }
+        return old === newChannel ? nil : old
     }
 
     public func deliverPacket(_ packet: NetworkPacket) {
