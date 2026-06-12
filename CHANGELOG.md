@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.6] - 2026-06-12
+
 ### Fixed
 
 - Device status no longer sticks at "online" with hours-old battery and now-playing data after the Mac sleeps, runs a screen saver, or the phone enters Doze. A periodic reconciler re-derives reachability from the last packet seen on the wall clock and silently probes idle paired links (only for capabilities the peer advertises, so healthy limited clients are not flapped), marking a peer that has gone away offline within about a minute so it reconnects on its own. ([#23](https://github.com/AlanHuang99/MacConnect/pull/23))
@@ -25,5 +27,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Discovery rebuilds on sleep/wake and network changes (Wi-Fi switch, dock/undock) and stale links are dropped, so peers reconnect without an app restart. ([#21](https://github.com/AlanHuang99/MacConnect/pull/21))
 
-[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.5...HEAD
+[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.6...HEAD
+[0.3.6]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/AlanHuang99/MacConnect/releases/tag/v0.3.5
