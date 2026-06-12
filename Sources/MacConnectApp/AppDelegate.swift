@@ -52,6 +52,14 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
 
         observeSystemWake()
 
+        // Periodic liveness reconciliation re-derives reachability from the
+        // last-packet time on the wall clock, which keeps counting across
+        // sleep. This catches the peer that vanished during display sleep /
+        // screen saver / Doze — when no socket-close, wake, or path-change
+        // event fires — so it stops showing stale "online" + battery +
+        // now-playing instead of waiting for a restart.
+        DeviceManager.shared.startReconciliation()
+
         // Services rescan is a full Launch Services walk; defer it a beat
         // and only run when the Info.plist NSServices block actually
         // changed since the last launch.
@@ -61,6 +69,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_: Notification) {
+        DeviceManager.shared.stopReconciliation()
         if let wakeObserver {
             NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
             self.wakeObserver = nil
