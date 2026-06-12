@@ -50,6 +50,16 @@ jobs:
           test -f build/MacConnect.app/Contents/Info.plist
           plutil -lint build/MacConnect.app/Contents/Info.plist
 
+      - name: Assemble direct-channel .app bundle (Sparkle)
+        run: ./scripts/build-app.sh release "0.0.0-ci" direct
+
+      - name: Verify Sparkle is embedded and wired
+        run: |
+          test -d "build/MacConnect.app/Contents/Frameworks/Sparkle.framework/Versions/B/XPCServices/Installer.xpc"
+          otool -l build/MacConnect.app/Contents/MacOS/MacConnect | grep -q "@executable_path/../Frameworks"
+          plutil -extract SUFeedURL raw build/MacConnect.app/Contents/Info.plist
+          plutil -lint build/MacConnect.app/Contents/Info.plist
+
   lint:
     name: Lint
     runs-on: macos-14

@@ -5,6 +5,7 @@ struct SettingsView: View {
     @Binding var isPresented: Bool
     @ObservedObject var settings: MacConnectCore.Settings = .shared
     @ObservedObject var transfers: TransferStore = .shared
+    @ObservedObject private var updater = UpdaterController.shared
     @StateObject private var loginItem = LoginItemController()
     @State private var nameDraft: String = MacConnectCore.Settings.shared.deviceName
 
@@ -114,6 +115,21 @@ struct SettingsView: View {
                             ForEach(transfers.recent) { transfer in
                                 recentTransferRow(transfer)
                             }
+                        }
+                    }
+
+                    if updater.isSupported {
+                        section("Updates") {
+                            HStack {
+                                Button("Check for Updates…") { updater.checkForUpdates() }
+                                    .disabled(!updater.canCheckForUpdates)
+                                Spacer()
+                            }
+                            Toggle("Automatically check for updates", isOn: automaticUpdateBinding)
+                            Text(
+                                "Updates download from GitHub Releases and are verified with a built-in signature before installing."
+                            )
+                            .font(.caption2).foregroundStyle(.secondary)
                         }
                     }
 
@@ -253,6 +269,13 @@ struct SettingsView: View {
         Binding(
             get: { loginItem.isEnabled },
             set: { newValue in loginItem.setEnabled(newValue) }
+        )
+    }
+
+    private var automaticUpdateBinding: Binding<Bool> {
+        Binding(
+            get: { updater.automaticallyChecksForUpdates },
+            set: { newValue in updater.automaticallyChecksForUpdates = newValue }
         )
     }
 

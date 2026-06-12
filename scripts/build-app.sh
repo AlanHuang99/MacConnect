@@ -2,16 +2,50 @@
 # Build a MacConnect.app bundle from the Swift Package executable.
 #
 # Usage:
-#   ./scripts/build-app.sh                                # debug, host arch
-#   ./scripts/build-app.sh release                        # release, host arch
-#   ./scripts/build-app.sh release-universal              # release, arm64+x86_64
-#   ./scripts/build-app.sh release-universal 0.1.0        # also stamp version
+#   ./scripts/build-app.sh                                   # release, host arch, App Store channel
+#   ./scripts/build-app.sh release                           # release, host arch
+#   ./scripts/build-app.sh release-universal                 # release, arm64+x86_64
+#   ./scripts/build-app.sh release-universal 0.1.0           # also stamp version
+#   ./scripts/build-app.sh release-universal 0.1.0 direct    # link Sparkle (in-app updates)
+#
+# Channels (third argument):
+#   appstore (default) — Sparkle-free. The future Mac App Store build; the
+#                        store delivers updates, and Apple rejects bundled
+#                        Sparkle. No update UI is shown.
+#   direct             — links Sparkle, embeds Sparkle.framework, and writes
+#                        the SUFeedURL / SUPublicEDKey Info.plist keys. For
+#                        GitHub Releases. See README "Distribution channels".
 set -euo pipefail
 
 CONFIG="${1:-release}"
 VERSION="${2:-0.1.0-dev}"
+CHANNEL="${3:-appstore}"
 ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT"
+
+# Sparkle's appcast feed and the EdDSA public key that verifies updates. The
+# public key is NOT secret (the matching private key is the GitHub Actions
+# secret SPARKLE_ED_PRIVATE_KEY). Generate the pair once with Sparkle's
+# `generate_keys` and replace the placeholder — see the README. Both can
+# be overridden from the environment for local update testing.
+SPARKLE_FEED_URL="${SPARKLE_FEED_URL:-https://alanhuang99.github.io/MacConnect/appcast.xml}"
+SPARKLE_PUBLIC_ED_KEY="${SPARKLE_PUBLIC_ED_KEY:-REPLACE_WITH_ED25519_PUBLIC_KEY}"
+
+case "$CHANNEL" in
+  direct)
+    echo ">> Channel: direct (Sparkle in-app updates)"
+    export MACCONNECT_SPARKLE=1
+    ;;
+  appstore)
+    echo ">> Channel: appstore (Sparkle-free)"
+    unset MACCONNECT_SPARKLE || true
+    ;;
+  *)
+    echo "Unknown channel: $CHANNEL" >&2
+    echo "Valid: appstore | direct" >&2
+    exit 1
+    ;;
+esac
 
 case "$CONFIG" in
   release-universal)
@@ -41,6 +75,7 @@ APP="$ROOT/build/MacConnect.app"
 CONTENTS="$APP/Contents"
 MACOS="$CONTENTS/MacOS"
 RES="$CONTENTS/Resources"
+FRAMEWORKS="$CONTENTS/Frameworks"
 
 echo ">> Assembling $APP (version $VERSION)"
 rm -rf "$APP"
@@ -61,6 +96,37 @@ if [[ ! -d "$SPM_BUNDLE" ]]; then
   exit 1
 fi
 cp -R "$SPM_BUNDLE" "$RES/"
+
+# Direct channel: embed Sparkle.framework next to the binary and teach the
+# binary to find it at @executable_path/../Frameworks. SwiftPM links
+# @rpath/Sparkle.framework but only adds an @loader_path rpath (valid in the
+# build dir, where binary and framework sit together); once relocated into the
+# .app the loader needs the Frameworks rpath. Inside-out codesigning of the
+# framework's nested XPC services / helpers happens later, in scripts/sign-app.sh.
+SPARKLE_PLIST_KEYS=""
+if [[ "$CHANNEL" == "direct" ]]; then
+  SPARKLE_FW="$BIN_DIR/Sparkle.framework"
+  if [[ ! -d "$SPARKLE_FW" ]]; then
+    echo "ERROR: Sparkle.framework not found at $SPARKLE_FW." >&2
+    echo "       The direct channel must build with MACCONNECT_SPARKLE=1 so SwiftPM" >&2
+    echo "       resolves and copies the Sparkle binary framework." >&2
+    exit 1
+  fi
+  mkdir -p "$FRAMEWORKS"
+  # -R preserves the Versions/Current symlink farm Sparkle ships; cp without it
+  # would dereference symlinks and break the framework layout / signature.
+  cp -R "$SPARKLE_FW" "$FRAMEWORKS/Sparkle.framework"
+  install_name_tool -add_rpath "@executable_path/../Frameworks" "$MACOS/MacConnect"
+  echo ">> Embedded Sparkle.framework and added Frameworks rpath"
+  if [[ "$SPARKLE_PUBLIC_ED_KEY" == "REPLACE_WITH_ED25519_PUBLIC_KEY" ]]; then
+    echo "::warning:: SUPublicEDKey is the placeholder. Generate a key pair (see" >&2
+    echo "            the README) before shipping — updates won't verify otherwise." >&2
+  fi
+  SPARKLE_PLIST_KEYS="
+    <key>SUFeedURL</key><string>${SPARKLE_FEED_URL}</string>
+    <key>SUPublicEDKey</key><string>${SPARKLE_PUBLIC_ED_KEY}</string>
+    <key>SUEnableAutomaticChecks</key><false/>"
+fi
 
 ICON_SRC="$ROOT/resources/AppIcon.icns"
 if [[ ! -f "$ICON_SRC" ]]; then
@@ -92,7 +158,7 @@ cat > "$CONTENTS/Info.plist" <<EOF
     <key>NSLocalNetworkUsageDescription</key>
     <string>MacConnect discovers KDE Connect devices on your local network.</string>
     <key>NSBonjourServices</key>
-    <array><string>_kdeconnect._udp</string></array>
+    <array><string>_kdeconnect._udp</string></array>${SPARKLE_PLIST_KEYS}
     <key>NSServices</key>
     <array>
         <dict>

@@ -26,8 +26,11 @@ Working features:
 - mDNS / Bonjour discovery (`_kdeconnect._udp`) alongside legacy UDP broadcast — finds peers across access points and on networks where broadcast is filtered.
 - Localization scaffolding: `Localizable.xcstrings` with an `en` baseline; the SwiftPM resource bundle is copied into `MacConnect.app/Contents/Resources/` by `scripts/build-app.sh` so `Bundle.module` lookups resolve at runtime. No non-English translations are shipped yet.
 - Distribution: Release workflow builds a universal binary, signs with Apple Developer ID + Hardened Runtime, notarizes via App Store Connect API key, staples the ticket, and publishes a `.dmg` + `.zip` to a GitHub Release.
+- In-app updates (direct build only): a "Check for Updates…" button and an optional automatic-check toggle in Settings, powered by [Sparkle](https://sparkle-project.org). Updates download from GitHub Releases and are verified with an EdDSA signature before installing. See [Distribution channels](#distribution-channels).
 
 Not implemented yet:
+
+- Mac App Store build. The source tree is already structured for it — the default (Sparkle-free) build is the App Store channel — but the store submission pipeline (sandbox entitlements, provisioning, upload) is not set up yet. See [Distribution channels](#distribution-channels).
 
 - macOS Share Extension proper (the modern Share sheet entry). The current Services menu integration is the practical equivalent; a real `.appex` Share Extension requires app-extension build tooling that SwiftPM doesn't support natively.
 - KDE Connect protocol v8 (post-TLS identity re-keying). The v7 implementation here interoperates with v7 peers; v8 is forward-compatibility only.
@@ -99,8 +102,9 @@ Sources/
     Resources/Localizable.xcstrings  # en baseline; SwiftPM-processed
     *.swift                          # menu-bar executable (AppKit + SwiftUI popover)
 Tests/MacConnectCoreTests/     # XCTest: packet round-trips, pair timestamp, PeerVerifier, EmbeddedChannel handler
-scripts/build-app.sh           # assembles MacConnect.app from the executable + copies SwiftPM resource bundle
-.github/workflows/             # CI (build+test, lint)
+scripts/build-app.sh           # assembles MacConnect.app; embeds Sparkle for the `direct` channel
+scripts/sign-app.sh            # Developer ID codesign, signing embedded Sparkle inside-out first
+.github/workflows/             # CI (build+test, lint) and release (sign, notarize, appcast)
 ```
 
 ## Protocol
@@ -119,14 +123,42 @@ Notes specific to this implementation:
 
 ## Releases
 
-Releases are tagged `vX.Y.Z`. Pushing a tag triggers `.github/workflows/release.yml`, which builds a universal binary, ad-hoc codesigns it, packages it as a `.zip` and a drag-to-`/Applications` `.dmg`, and publishes a GitHub Release with both assets.
+Releases are tagged `vX.Y.Z`. Pushing a tag triggers `.github/workflows/release.yml`, which builds the universal **direct** binary (with Sparkle), signs it with Apple Developer ID + Hardened Runtime (Sparkle's nested helpers signed inside-out), notarizes and staples it, packages a `.zip` and a drag-to-`/Applications` `.dmg`, publishes a GitHub Release with both assets, and refreshes the Sparkle appcast on GitHub Pages.
 
-To cut a release locally:
+To cut a release:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.3.0
+git push origin v0.3.0
 ```
+
+## Distribution channels
+
+One source tree builds two products, selected by the third argument to `scripts/build-app.sh` (which sets the `MACCONNECT_SPARKLE` environment variable that `Package.swift` reads):
+
+| Channel | Build | Updates | Sparkle |
+|---------|-------|---------|---------|
+| **Direct** (GitHub Releases) | `./scripts/build-app.sh release-universal X.Y.Z direct` | In-app, via Sparkle | linked + embedded |
+| **Mac App Store** (default) | `./scripts/build-app.sh release-universal X.Y.Z` | App Store | absent |
+
+All Sparkle code is gated behind the `SPARKLE` compilation condition, set only on the direct build. The default build links no Sparkle, ships no update UI, and carries none of Sparkle's machinery — which the App Store rejects. The App Store submission pipeline itself is not wired up yet; the Sparkle-free build is the groundwork for it.
+
+### Auto-update (Sparkle) — one-time key setup
+
+In-app updates verify each download with an EdDSA (ed25519) key pair. Until it is configured, the release workflow still publishes the `.dmg`/`.zip`; it just skips refreshing the appcast (so in-app updates stay on the previous feed), and `build-app.sh` warns that `SUPublicEDKey` is the placeholder.
+
+1. Generate the key pair once with Sparkle's `generate_keys` (from the [Sparkle release bundle](https://github.com/sparkle-project/Sparkle/releases)):
+   ```bash
+   ./bin/generate_keys                       # stores the private key in your login keychain
+   ./bin/generate_keys -x sparkle_private.key  # also export it to a file
+   ```
+2. It prints a base64 **public** key. Set it as the repository **variable** `SPARKLE_PUBLIC_ED_KEY` (Settings → Secrets and variables → Actions → Variables). The release build bakes it into `SUPublicEDKey`. The public key is not secret.
+3. Store the exported **private** key (verbatim file contents) as the repository **secret** `SPARKLE_ED_PRIVATE_KEY`. Keep the file out of the repo. Delete it after.
+4. Enable GitHub Pages for the repo, serving the `gh-pages` branch. The feed lives at `https://alanhuang99.github.io/MacConnect/appcast.xml` (`SUFeedURL` in `build-app.sh` — adjust if your Pages URL differs). The release workflow creates and pushes `appcast.xml` there.
+
+The first Sparkle-enabled release cannot auto-update users already on an earlier, Sparkle-free build — they download it once from the Releases page, and in-app updates work from the next release onward.
+
+To test an update locally: build the direct channel at a low version with a real key (`SPARKLE_PUBLIC_ED_KEY=… ./scripts/build-app.sh release 0.3.0 direct`), build a newer version, `sign_update` the newer `.zip`, write a local `appcast.xml` pointing at it (a `file://` enclosure is fine), point `SUFeedURL` at that file, and run the older build's "Check for Updates…".
 
 ## License
 
