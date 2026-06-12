@@ -218,14 +218,25 @@ public final class DeviceManager: ObservableObject {
                 continue
             }
             guard device.isReachable, device.isPaired else { continue }
+            // Probe eligibility is the peer's advertised capabilities ∩ our
+            // local toggles — NOT our toggles alone (which default to on). A
+            // paired-but-limited client that advertises neither battery nor
+            // mpris yields no probes, so `livenessAction` returns `.keep` and
+            // never flaps it offline for ignoring packets it never claimed.
+            let probes = Self.supportedProbes(
+                batteryEnabled: Settings.shared.isPluginEnabled("battery", forDevice: device.id),
+                mprisEnabled: Settings.shared.isPluginEnabled("mpris", forDevice: device.id),
+                peerIncoming: Set(device.incomingCapabilities),
+                peerOutgoing: Set(device.outgoingCapabilities)
+            )
             switch Self.livenessAction(
-                age: age, probeable: Self.isProbeable(deviceId: device.id),
+                age: age, probeable: !probes.isEmpty,
                 ttl: Self.livenessTTL, quiet: Self.probeQuietThreshold
             ) {
             case .keep:
                 break
             case .probe:
-                sendLivenessProbe(to: device)
+                sendLivenessProbe(probes, to: device)
             case .drop:
                 Log.net
                     .notice(
@@ -256,20 +267,16 @@ public final class DeviceManager: ObservableObject {
         LanLinkProvider.shared.dropLink(deviceId: device.id)
     }
 
-    /// Silent liveness probe: ask for battery / now-playing, honouring the
-    /// per-device plugin toggles so we never contradict a muted plugin. The
-    /// peer's reply flows back through `dispatch`, refreshing `lastSeen` and
-    /// proving the link is alive. These are the same request packets the
-    /// popover sends on open — peers answer them without raising a banner,
-    /// which is why this works where the reverted `_keepalive` ping did not.
-    private func sendLivenessProbe(to device: Device) {
-        let id = device.id
-        if Settings.shared.isPluginEnabled("battery", forDevice: id) {
-            BatteryPlugin.requestUpdate(from: device)
-        }
-        if Settings.shared.isPluginEnabled("mpris", forDevice: id) {
-            MprisPlugin.requestNowPlaying(from: device)
-        }
+    /// Send the precomputed silent liveness probes — `battery` / `mpris`
+    /// request packets the peer answers without raising a banner (the same
+    /// ones the popover sends on open), which is why this works where the
+    /// reverted `_keepalive` ping did not. The peer's reply flows back through
+    /// `dispatch`, refreshing `lastSeen` and proving the link is alive. The set
+    /// is already filtered to plugins enabled locally AND advertised by the
+    /// peer (see `supportedProbes`), so every probe here can actually land.
+    private func sendLivenessProbe(_ probes: Set<ProbeKind>, to device: Device) {
+        if probes.contains(.battery) { BatteryPlugin.requestUpdate(from: device) }
+        if probes.contains(.mpris) { MprisPlugin.requestNowPlaying(from: device) }
     }
 
     enum LivenessAction: Equatable {
@@ -298,8 +305,37 @@ public final class DeviceManager: ObservableObject {
         !isPaired && !isReachable && age > maxAge
     }
 
-    nonisolated static func isProbeable(deviceId: String) -> Bool {
-        Settings.shared.isPluginEnabled("battery", forDevice: deviceId)
-            || Settings.shared.isPluginEnabled("mpris", forDevice: deviceId)
+    enum ProbeKind: Hashable {
+        case battery
+        case mpris
+    }
+
+    /// Which silent liveness probes this peer will actually answer. A probe
+    /// counts only when the plugin is enabled locally for the peer AND the peer
+    /// advertises it — either it sends the state packet (`kdeconnect.battery` /
+    /// `kdeconnect.mpris` in its outgoing capabilities) or it accepts the
+    /// request (`*.request` in its incoming capabilities). Gating on the peer's
+    /// advertised capabilities, not just our local toggles (which default to
+    /// on), is what stops a paired-but-limited client from being probed with
+    /// packets it ignores and then dropped offline every TTL. Pure and
+    /// nonisolated so it's unit-testable.
+    nonisolated static func supportedProbes(
+        batteryEnabled: Bool,
+        mprisEnabled: Bool,
+        peerIncoming: Set<String>,
+        peerOutgoing: Set<String>
+    ) -> Set<ProbeKind> {
+        var probes: Set<ProbeKind> = []
+        if batteryEnabled,
+           peerIncoming.contains(PacketType.batteryRequest) || peerOutgoing.contains(PacketType.battery)
+        {
+            probes.insert(.battery)
+        }
+        if mprisEnabled,
+           peerIncoming.contains(PacketType.mprisRequest) || peerOutgoing.contains(PacketType.mpris)
+        {
+            probes.insert(.mpris)
+        }
+        return probes
     }
 }

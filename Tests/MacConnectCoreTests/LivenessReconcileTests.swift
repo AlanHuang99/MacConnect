@@ -86,4 +86,44 @@ final class LivenessReconcileTests: XCTestCase {
             )
         )
     }
+
+    /// The Codex review case: a paired but limited client that advertises
+    /// neither battery nor mpris must yield no probes — otherwise we'd probe it
+    /// with packets it ignores and `.drop` it every TTL. No probes -> not
+    /// probeable -> `livenessAction` keeps it (deferring to link-level checks).
+    func testLimitedClientWithoutBatteryOrMprisHasNoProbes() {
+        let probes = DeviceManager.supportedProbes(
+            batteryEnabled: true, mprisEnabled: true,
+            peerIncoming: [], peerOutgoing: []
+        )
+        XCTAssertTrue(probes.isEmpty)
+    }
+
+    func testPeerAcceptingTheRequestIsProbeable() {
+        let probes = DeviceManager.supportedProbes(
+            batteryEnabled: true, mprisEnabled: true,
+            peerIncoming: [PacketType.batteryRequest], peerOutgoing: []
+        )
+        XCTAssertEqual(probes, [.battery])
+    }
+
+    /// A peer that only advertises the producer side (it sends battery state)
+    /// will still answer our request, so that counts too.
+    func testPeerAdvertisingProducerCapabilityIsProbeable() {
+        let probes = DeviceManager.supportedProbes(
+            batteryEnabled: true, mprisEnabled: false,
+            peerIncoming: [], peerOutgoing: [PacketType.battery]
+        )
+        XCTAssertEqual(probes, [.battery])
+    }
+
+    /// A locally disabled plugin is never probed even when the peer supports
+    /// it, honouring the per-device mute.
+    func testLocallyDisabledPluginIsNotProbed() {
+        let probes = DeviceManager.supportedProbes(
+            batteryEnabled: false, mprisEnabled: true,
+            peerIncoming: [PacketType.batteryRequest, PacketType.mprisRequest], peerOutgoing: []
+        )
+        XCTAssertEqual(probes, [.mpris])
+    }
 }
