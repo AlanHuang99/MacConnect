@@ -40,8 +40,15 @@ jobs:
       - name: Resolve dependencies
         run: swift package resolve
 
-      - name: Build universal .app
-        run: ./scripts/build-app.sh release-universal "${{ steps.ver.outputs.version }}"
+      - name: Build universal .app (direct channel + Sparkle)
+        env:
+          # Public key that verifies updates; pairs with the SPARKLE_ED_PRIVATE_KEY
+          # secret used to sign the appcast below. Not secret. Set as a repo
+          # variable once generated (see the README); falls back to the
+          # placeholder baked into build-app.sh, which builds fine but won't
+          # verify real updates.
+          SPARKLE_PUBLIC_ED_KEY: ${{ vars.SPARKLE_PUBLIC_ED_KEY }}
+        run: ./scripts/build-app.sh release-universal "${{ steps.ver.outputs.version }}" direct
 
       - name: Verify universal binary
         run: |
@@ -68,7 +75,7 @@ jobs:
           rm "$CERT_PATH"
           security find-identity -v -p codesigning "$KEYCHAIN_PATH"
 
-      - name: Codesign with Developer ID + Hardened Runtime
+      - name: Codesign with Developer ID (inside-out, Hardened Runtime)
         run: |
           KEYCHAIN_PATH="$RUNNER_TEMP/build.keychain-db"
           IDENTITY=$(security find-identity -v -p codesigning "$KEYCHAIN_PATH" \
@@ -78,13 +85,10 @@ jobs:
             security find-identity -v -p codesigning "$KEYCHAIN_PATH"
             exit 1
           fi
-          codesign --force --options runtime --timestamp \
-            --entitlements resources/MacConnect.entitlements \
-            --keychain "$KEYCHAIN_PATH" \
-            --sign "$IDENTITY" \
-            build/MacConnect.app
-          codesign --verify --strict --verbose=2 build/MacConnect.app
-          codesign --display --verbose=4 build/MacConnect.app
+          # sign-app.sh signs Sparkle's nested XPC services / helpers inside-out
+          # before the framework and then the app (with Hardened Runtime), and
+          # runs a deep strict verify at the end.
+          ./scripts/sign-app.sh build/MacConnect.app "$IDENTITY" "$KEYCHAIN_PATH"
 
       - name: Notarize
         id: notarize
@@ -179,3 +183,81 @@ jobs:
           See [README](https://github.com/${{ github.repository }}/blob/main/README.md)
           for what's working and what's not.
           NOTES_EOF
+
+      # --- Sparkle appcast (Direct channel auto-update) ---
+      # Gated on the signing secret so a release made before the Sparkle key is
+      # configured still succeeds — it just publishes the DMG/zip without
+      # refreshing the feed. The check reads the secret via env, never
+      # interpolating it into a shell command.
+      - name: Check for Sparkle signing key
+        id: sparkle
+        env:
+          KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          if [[ -n "$KEY" ]]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::SPARKLE_ED_PRIVATE_KEY not set — skipping appcast update. In-app updates stay on the previous feed."
+          fi
+
+      - name: Sign update and refresh appcast
+        if: steps.sparkle.outputs.enabled == 'true'
+        env:
+          SPARKLE_ED_PRIVATE_KEY: ${{ secrets.SPARKLE_ED_PRIVATE_KEY }}
+        run: |
+          set -euo pipefail
+          # Official Sparkle CLI tools bundle (prebuilt generate_appcast/sign_update).
+          SPARKLE_VER=2.9.3
+          curl -fsSL -o "$RUNNER_TEMP/sparkle.tar.xz" \
+            "https://github.com/sparkle-project/Sparkle/releases/download/${SPARKLE_VER}/Sparkle-${SPARKLE_VER}.tar.xz"
+          mkdir -p "$RUNNER_TEMP/sparkle"
+          tar -xJf "$RUNNER_TEMP/sparkle.tar.xz" -C "$RUNNER_TEMP/sparkle"
+          GENERATE_APPCAST="$RUNNER_TEMP/sparkle/bin/generate_appcast"
+
+          # EdDSA private key (the verbatim contents of `generate_keys -x`).
+          KEYFILE="$RUNNER_TEMP/sparkle_ed_private.key"
+          printf '%s' "$SPARKLE_ED_PRIVATE_KEY" > "$KEYFILE"
+
+          # Work dir: the current appcast (to preserve prior entries) plus the
+          # new, notarized + stapled zip. generate_appcast merges + signs in place.
+          WORK="$RUNNER_TEMP/appcast"
+          mkdir -p "$WORK"
+          curl -fsSL "https://alanhuang99.github.io/MacConnect/appcast.xml" \
+            -o "$WORK/appcast.xml" || echo "No existing appcast (first Sparkle release)."
+          cp "build/MacConnect-${{ steps.ver.outputs.tag }}.zip" "$WORK/"
+
+          "$GENERATE_APPCAST" \
+            --ed-key-file "$KEYFILE" \
+            --download-url-prefix "https://github.com/${GITHUB_REPOSITORY}/releases/download/${{ steps.ver.outputs.tag }}/" \
+            --maximum-versions 0 \
+            -o "$WORK/appcast.xml" \
+            "$WORK"
+
+          rm -f "$KEYFILE"
+          echo "----- appcast.xml -----"
+          cat "$WORK/appcast.xml"
+
+      - name: Publish appcast to GitHub Pages
+        if: steps.sparkle.outputs.enabled == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          WORK="$RUNNER_TEMP/appcast"
+          PAGES="$RUNNER_TEMP/pages"
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git clone --depth 1 --branch gh-pages "$REMOTE" "$PAGES" 2>/dev/null; then
+            cp "$WORK/appcast.xml" "$PAGES/appcast.xml"
+          else
+            # First run: gh-pages doesn't exist yet. Create it as an orphan branch.
+            git clone --depth 1 "$REMOTE" "$PAGES"
+            ( cd "$PAGES" && git checkout --orphan gh-pages && git rm -rf . >/dev/null 2>&1 || true )
+            cp "$WORK/appcast.xml" "$PAGES/appcast.xml"
+          fi
+          cd "$PAGES"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add appcast.xml
+          git commit -m "appcast: ${{ steps.ver.outputs.tag }}" || { echo "No appcast change."; exit 0; }
+          git push origin gh-pages

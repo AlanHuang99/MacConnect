@@ -33,6 +33,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         configureNotificationCenter()
         showWelcomeWindowIfFirstRun()
 
+        // Boot the updater at launch so a user who has opted into automatic
+        // checks gets one shortly after start. No-op in the App Store build
+        // (UpdaterController is an inert shell without Sparkle).
+        _ = UpdaterController.shared
+
         // Networking touches openssl (subprocess), NIO bind, and Bonjour —
         // any of which can stall on first launch (cold launchd, MDM,
         // multicast permission gate). Move off the main thread so the UI

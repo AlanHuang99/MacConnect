@@ -8,6 +8,7 @@
 
 ## Medium term
 
+- Mac App Store submission pipeline (sandbox entitlements, provisioning profile, `productbuild` package, App Store Connect upload). The Sparkle-free default build is already the App Store channel; only the submission tooling is missing.
 - App About window in addition to the Settings section.
 - Non-English localizations (catalog wiring is in place; `Localizable.xcstrings` only ships `en` today).
 - Volume + seek bar on the MPRIS now-playing tile.
@@ -44,4 +45,5 @@
 - About section in Settings (version + build + GitHub link); empty-state troubleshooting checklist; ⌘R / ⌘, / ⌘Q keyboard shortcuts (0.2.0).
 - PayloadReceiver writes off the event loop with autoRead backpressure; PluginRegistry capability cache; long-lived UDP broadcast socket; strict-concurrency complete (0.2.0).
 - `Localizable.xcstrings` scaffolding via SwiftPM resources; `.swiftlint.yml` / `.swiftformat` and a CI Lint job (0.2.0).
-- Sleep/wake + Wi-Fi-change recovery: discovery rebuilds and stale links drop on `NSWorkspace.didWake` and `NWPathMonitor` interface changes, so peers reconnect without an app restart; the popover refresh button now does a full re-discover (0.2.2).
+- Sleep/wake + Wi-Fi-change recovery: discovery rebuilds and stale links drop on `NSWorkspace.didWake` and `NWPathMonitor` interface changes, so peers reconnect without an app restart; the popover refresh button now does a full re-discover (0.4.0).
+- In-app updates via Sparkle on the direct (GitHub Releases) build: "Check for Updates…" + automatic-check toggle in Settings, EdDSA-verified downloads, inside-out-signed `Sparkle.framework`, and an appcast published to GitHub Pages. The default build stays Sparkle-free as the Mac App Store channel (`MACCONNECT_SPARKLE` / `#if SPARKLE`) (0.4.0).
