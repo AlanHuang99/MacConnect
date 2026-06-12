@@ -120,7 +120,7 @@ struct StatusView: View {
             Text("MacConnect", bundle: .module).font(.headline)
             Spacer()
             Button {
-                LanLinkProvider.shared.refresh()
+                LanLinkProvider.shared.rediscover()
             } label: {
                 Image(systemName: "arrow.clockwise")
             }

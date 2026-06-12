@@ -33,6 +33,28 @@ public final class LanLinkProvider: @unchecked Sendable {
     /// for the backoff schedule.
     private var dialCooldown = DialCooldownTracker()
 
+    /// Watches for connectivity returning / interfaces changing so we can
+    /// rebuild discovery after sleep or a Wi-Fi switch. See
+    /// ``startPathMonitor()`` and ``restartDiscovery()``.
+    private var pathMonitor: NWPathMonitor?
+    /// Coalesces a burst of wake / path-change triggers into one rebuild.
+    private var pendingRestart: DispatchWorkItem?
+    /// NWPathMonitor delivers the current path as its first callback; that
+    /// baseline is the state discovery was just built for, so we record it
+    /// without rebuilding. Touched only on `queue`.
+    private var pathMonitorPrimed = false
+    /// Last seen path signature (status + interface names); a rebuild fires
+    /// only when this changes. Touched only on `queue`.
+    private var lastPathSignature = ""
+    /// `true` once `start()` has built the stack; gates `restartDiscovery()`
+    /// so a path callback can't rebuild before the first build. Set/cleared
+    /// on `queue`.
+    private var didStart = false
+
+    /// Debounce window for `restartDiscovery()`. A wake bounces interfaces
+    /// several times over a second or two; coalesce those into one rebuild.
+    public static let restartDebounceInterval: TimeInterval = 1.5
+
     /// Bonjour service type advertised + browsed for. Matches KDE Connect's
     /// canonical mDNS service name; using anything else would break
     /// interoperability with KDE Connect's mDNS-aware clients.
@@ -64,13 +86,46 @@ public final class LanLinkProvider: @unchecked Sendable {
         tcpPort = port
         Log.net.info("TCP listener on \(port, privacy: .public)")
 
-        try startUDPListener()
-        startMDNSBrowser()
-        // broadcastFD is owned by `queue`; open it from there so the long-
-        // lived socket has a single confinement point.
-        queue.sync { self.openBroadcastSocketOnQueue() }
-        startBroadcastTimer()
+        // Build the UDP listener, mDNS browser, and broadcast socket/timer
+        // on `queue` so a wake / network-change rebuild (restartDiscovery)
+        // can't race their setup — every mutation of these lives on `queue`.
+        queue.sync { self.setupDiscoveryOnQueue() }
         broadcastIdentity()
+        // Watch for sleep/wake and Wi-Fi changes so discovery rebuilds itself
+        // instead of staying dead until the user restarts the app.
+        startPathMonitor()
+    }
+
+    /// Build (or rebuild) the discovery stack. MUST run on `queue`. Safe to
+    /// call again after `teardownDiscoveryOnQueue()` to rebind on the
+    /// current interfaces after a wake or network change.
+    private func setupDiscoveryOnQueue() {
+        do {
+            try startUDPListener()
+        } catch {
+            // Non-fatal: broadcast + mDNS still find peers. A UDP-listener
+            // rebind failure after wake must not leave discovery dead.
+            Log.net.error("UDP listener bind failed: \(error.localizedDescription, privacy: .public)")
+        }
+        startMDNSBrowser()
+        openBroadcastSocketOnQueue()
+        startBroadcastTimer()
+        didStart = true
+    }
+
+    /// Tear down the discovery stack. MUST run on `queue`. Pairs with
+    /// `setupDiscoveryOnQueue()` for a clean rebuild.
+    private func teardownDiscoveryOnQueue() {
+        broadcastTimer?.cancel()
+        broadcastTimer = nil
+        udpListener?.cancel()
+        udpListener = nil
+        mdnsBrowser?.cancel()
+        mdnsBrowser = nil
+        if broadcastFD >= 0 {
+            close(broadcastFD)
+            broadcastFD = -1
+        }
     }
 
     /// Open the long-lived UDP broadcast socket. MUST run on `queue` —
@@ -97,6 +152,8 @@ public final class LanLinkProvider: @unchecked Sendable {
     /// for them to settle, then move on and let the kernel reap whatever
     /// remains as the process exits.
     public func stop(deadline: DispatchTime = .now() + 1.0) {
+        pathMonitor?.cancel()
+        pathMonitor = nil
         broadcastTimer?.cancel()
         broadcastTimer = nil
         udpListener?.cancel()
@@ -105,8 +162,13 @@ public final class LanLinkProvider: @unchecked Sendable {
         mdnsBrowser = nil
         // Close the broadcast socket on its owning queue so a concurrent
         // broadcastIdentity tick can't sendto() a descriptor that was just
-        // closed (or already recycled for another resource).
+        // closed (or already recycled for another resource). Cancel any
+        // pending restart and clear `didStart` here too so a path callback
+        // racing teardown can't schedule a rebuild against a dead provider.
         queue.sync {
+            self.pendingRestart?.cancel()
+            self.pendingRestart = nil
+            self.didStart = false
             if self.broadcastFD >= 0 {
                 close(self.broadcastFD)
                 self.broadcastFD = -1
@@ -155,6 +217,122 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     public func refresh() {
         broadcastIdentity()
+    }
+
+    /// Re-announce immediately (instant feedback) then rebuild the discovery
+    /// stack. Wired to the popover's refresh button so a manual refresh
+    /// genuinely re-discovers — matching its "Re-broadcast & re-discover"
+    /// label — instead of only re-broadcasting on a stack that died at sleep.
+    public func rediscover() {
+        broadcastIdentity()
+        restartDiscovery()
+    }
+
+    /// Rebuild discovery on the current interfaces and force every peer link
+    /// to re-establish. This is the programmatic equivalent of quitting and
+    /// relaunching the app, which until now was the only way to recover.
+    ///
+    /// Why it's needed: across a sleep/wake or a Wi-Fi change the NWListener
+    /// (UDP), NWBrowser (mDNS), and broadcast socket stop delivering on the
+    /// now-stale interfaces and never self-restart. Compounding that, a peer
+    /// link whose TCP socket died while we slept stays marked `secure`, so
+    /// `handleUDPIdentity`'s `existing.isSecure` guard skips re-dialing it
+    /// until OS keepalive reaps the socket (~60 s) — and the just-woken side
+    /// can't be found at all until its listener is rebuilt. Dropping the
+    /// links here lets peers reconnect within one discovery tick.
+    ///
+    /// Debounced on `queue`: a wake produces a burst of NWPathMonitor
+    /// callbacks as interfaces bounce; coalesce them into a single rebuild.
+    public func restartDiscovery() {
+        queue.async { [weak self] in
+            guard let self, self.didStart else { return }
+            self.pendingRestart?.cancel()
+            let work = DispatchWorkItem { [weak self] in self?.performRestartOnQueue() }
+            self.pendingRestart = work
+            self.queue.asyncAfter(deadline: .now() + Self.restartDebounceInterval, execute: work)
+        }
+    }
+
+    private func performRestartOnQueue() {
+        guard serverChannel != nil else { return }
+        Log.net.notice("Rebuilding discovery stack (wake / network change / manual refresh)")
+        dropAllLinksForRestart()
+        teardownDiscoveryOnQueue()
+        setupDiscoveryOnQueue()
+        broadcastIdentityOnQueue()
+    }
+
+    /// Close and forget every peer link so they reconnect cleanly after a
+    /// wake / network change. Runs on `queue`. `handleClosed` no-ops for
+    /// these channels because we clear the channel→deviceId map first; we
+    /// fire `notifyClosed()` ourselves so DeviceManager marks each device
+    /// offline (both paths are idempotent).
+    private func dropAllLinksForRestart() {
+        linkLock.lock()
+        let links = Array(linksByDeviceId.values)
+        linksByDeviceId.removeAll()
+        channelToDeviceId.removeAll()
+        dialCooldown.removeAll()
+        linkLock.unlock()
+        for link in links {
+            link.disconnect()
+            link.notifyClosed()
+        }
+    }
+
+    // MARK: - Network path monitoring
+
+    /// Rebuild discovery when connectivity returns or the interface set
+    /// changes (sleep/wake, Wi-Fi switch, dock/undock). A same-interface IP
+    /// change is intentionally ignored here — the 5 s broadcast already
+    /// re-enumerates addresses, so it self-heals without a full rebuild.
+    private func startPathMonitor() {
+        let monitor = NWPathMonitor()
+        monitor.pathUpdateHandler = { [weak self] path in
+            guard let self else { return }
+            let rebuild = Self.shouldRebuild(
+                isSatisfied: path.status == .satisfied,
+                signature: Self.pathSignature(path),
+                primed: &self.pathMonitorPrimed,
+                lastSignature: &self.lastPathSignature
+            )
+            if rebuild {
+                Log.net.notice("Network path changed; rebuilding discovery")
+                self.restartDiscovery()
+            }
+        }
+        monitor.start(queue: queue)
+        pathMonitor = monitor
+    }
+
+    /// Status + the sorted set of available interface names. Two paths with
+    /// the same signature need no rebuild; a change (interface up/down,
+    /// connectivity returning after sleep) does.
+    private static func pathSignature(_ path: NWPath) -> String {
+        let interfaces = path.availableInterfaces.map(\.name).sorted().joined(separator: ",")
+        return "\(path.status)|\(interfaces)"
+    }
+
+    /// Pure decision for the path monitor, extracted so it's unit-testable
+    /// without a live NWPathMonitor (which can't be constructed in tests).
+    /// Updates the remembered baseline in place and returns `true` only when
+    /// a *change* lands on a *satisfied* path AFTER the first (baseline)
+    /// callback — so we never rebuild on the initial state, on an unchanged
+    /// path, or while connectivity is gone.
+    static func shouldRebuild(
+        isSatisfied: Bool,
+        signature: String,
+        primed: inout Bool,
+        lastSignature: inout String
+    ) -> Bool {
+        guard primed else {
+            primed = true
+            lastSignature = signature
+            return false
+        }
+        guard signature != lastSignature else { return false }
+        lastSignature = signature
+        return isSatisfied
     }
 
     private func isLocalAddress(_ remote: SocketAddress) -> Bool {
