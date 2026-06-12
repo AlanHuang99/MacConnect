@@ -1,82 +1,87 @@
+<div align="center">
+
+<img src="docs/icon.png" width="96" height="96" alt="MacConnect icon">
+
 # MacConnect
 
-A KDE Connect client for macOS, written in Swift, AppKit, and SwiftUI. It speaks the KDE Connect LAN protocol and interoperates with KDE Connect on Android, Linux, and Windows.
+An open-source KDE Connect client for macOS. Pair your Android, Linux, or Windows devices with your Mac over the local network to share files, clipboard, notifications, media controls, and battery status.
 
-## Status
+[![CI](https://github.com/AlanHuang99/MacConnect/actions/workflows/ci.yml/badge.svg)](https://github.com/AlanHuang99/MacConnect/actions/workflows/ci.yml)
+[![License: GPL v3](https://img.shields.io/badge/License-GPLv3-blue.svg)](LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/AlanHuang99/MacConnect)](https://github.com/AlanHuang99/MacConnect/releases/latest)
+[![Platform: macOS 13+](https://img.shields.io/badge/platform-macOS%2013%2B-lightgrey.svg)](https://github.com/AlanHuang99/MacConnect/releases/latest)
 
-Working features:
+</div>
 
-- UDP discovery on port 1716, with subnet-directed broadcasts on every active IPv4 interface.
-- Plain-TCP identity exchange followed by mutual TLS (TOFU on first pair, per-device certificate pinning afterwards).
-- Pair / unpair flow with explicit Accept/Reject prompts in both directions.
-- In-app recovery when a pinned peer's certificate changes (e.g. peer was reinstalled): the popover shows a "Certificate changed" warning with a Reset Trust button instead of failing silently.
-- Plugins:
-  - Ping (send + receive, banner notification on receive).
-  - Clipboard (manual push on outbound; auto-apply on inbound; image fallback sends the pasteboard image as a `clipboard-<uuid>.png` file payload when no text is present).
-  - Notifications (receive Android notifications as macOS banners, with inline Reply for notifications that carry a `requestReplyId`).
-  - Find My Phone (ring outbound).
-  - Share (URL, text, and file payload — send and receive over a second TLS connection).
-  - MPRIS (now-playing tile in the device row with title/artist, Play-Pause, Next, Previous; control buttons disable when the peer reports the action as unsupported).
-  - Battery (peer's percent + charging indicator shown on the device row when paired and online).
-- Menu-bar UI: popover lists discovered devices with pair status, last-seen age for offline peers, paired-first ordering, and per-device actions. Active file transfers render an inline progress bar; the Settings panel keeps the last 20 completed transfers. Devices accept file drops directly when paired and online.
-- Connection lifecycle: TCP `SO_KEEPALIVE` plus Darwin `TCP_KEEPALIVE`/`KEEPINTVL`/`KEEPCNT` (30 / 10 / 3) so dead sockets are detected in ~60 s; a NIO `IdleStateHandler` (300 s) is the wedged-socket safety net. No app-layer heartbeat — KDE Connect peers treat unknown `kdeconnect.ping` flags as ordinary pings and would show a notification for each one.
-- Sleep/wake and network-change recovery: on `NSWorkspace.didWake` and on `NWPathMonitor` interface changes (Wi-Fi switch, dock/undock), discovery rebuilds on the current interfaces and stale links are dropped so peers reconnect within a discovery tick — no app restart needed. The popover refresh button (⌘R) does the same full re-discover.
-- Settings panel: editable broadcast name, SHA-256 fingerprint display (local + per pinned peer, with Copy buttons), per-plugin enable/disable toggles, per-device plugin overrides on each trusted-device row, Launch-at-Login toggle, pinned-device list with Forget action, Recent Transfers, and an About section with version + GitHub link.
-- "Send via MacConnect" Finder Services entry (right-click any file → Services → Send via MacConnect → pick a paired device).
-- mDNS / Bonjour discovery (`_kdeconnect._udp`) alongside legacy UDP broadcast — finds peers across access points and on networks where broadcast is filtered.
-- Localization scaffolding: `Localizable.xcstrings` with an `en` baseline; the SwiftPM resource bundle is copied into `MacConnect.app/Contents/Resources/` by `scripts/build-app.sh` so `Bundle.module` lookups resolve at runtime. No non-English translations are shipped yet.
-- Distribution: Release workflow builds a universal binary, signs with Apple Developer ID + Hardened Runtime, notarizes via App Store Connect API key, staples the ticket, and publishes a `.dmg` + `.zip` to a GitHub Release.
-- In-app updates (direct build only): a "Check for Updates…" button and an optional automatic-check toggle in Settings, powered by [Sparkle](https://sparkle-project.org). Updates download from GitHub Releases and are verified with an EdDSA signature before installing. See [Distribution channels](#distribution-channels).
+MacConnect lives in the menu bar and speaks the KDE Connect LAN protocol (version 7), so it interoperates with KDE Connect on Android, Linux, and Windows, and with the KDE Connect iOS app. Everything runs peer-to-peer over TLS on your local network: there is no cloud relay, account, or telemetry.
 
-Not implemented yet:
+## Features
 
-- Mac App Store build. The source tree is already structured for it — the default (Sparkle-free) build is the App Store channel — but the store submission pipeline (sandbox entitlements, provisioning, upload) is not set up yet. See [Distribution channels](#distribution-channels).
+- **Discovery and pairing** — finds peers over UDP broadcast and mDNS/Bonjour, then pairs over mutual TLS with trust-on-first-use and per-device certificate pinning. Pairing is confirmed with Accept/Reject prompts on both sides, and a changed peer certificate raises a "Reset Trust" prompt instead of failing silently.
+- **File transfer** — send from the popover, by drag-and-drop onto a device row, or from Finder's right-click → Services → "Send via MacConnect". Incoming files land in `~/Downloads`; active transfers show an inline progress bar and the last 20 are listed in Settings.
+- **Clipboard** — push the Mac clipboard to a device and auto-apply incoming clipboard, with an image fallback that sends the pasteboard image as a file.
+- **Notifications** — Android notifications appear as macOS banners, with inline reply where the notification supports it.
+- **Media control (MPRIS)** — a now-playing tile per device with title and artist plus Play-Pause, Next, and Previous.
+- **Battery** — the peer's charge level and charging state on the device row.
+- **Find My Phone** — ring a paired device from its menu.
+- **Per-plugin control** — enable or disable each plugin globally or per device.
+- **Launch at login**, SHA-256 fingerprint display for out-of-band verification, and an editable broadcast name.
 
-- macOS Share Extension proper (the modern Share sheet entry). The current Services menu integration is the practical equivalent; a real `.appex` Share Extension requires app-extension build tooling that SwiftPM doesn't support natively.
-- KDE Connect protocol v8 (post-TLS identity re-keying). The v7 implementation here interoperates with v7 peers; v8 is forward-compatibility only.
-- Non-English localizations. The catalog and lookup wiring are in place; entries beyond `en` are not yet provided.
+MacConnect deliberately stays on the local network: connections are user-initiated and peer-to-peer, and the app ships no analytics. It does not relay traffic through any server.
 
-See [`ROADMAP.md`](ROADMAP.md) for upcoming work.
+## Requirements
+
+- macOS 13 (Ventura) or later. The release binary is universal (Apple Silicon and Intel).
+- A device on the same local network running KDE Connect (Android, Linux, or Windows) or the KDE Connect iOS app.
 
 ## Install
 
-Download the latest release from [Releases](../../releases). Both a `.dmg` and a `.zip` of the `.app` bundle are published. The DMG is the friendlier option:
+Download the latest `.dmg` from [Releases](https://github.com/AlanHuang99/MacConnect/releases/latest), open it, and drag **MacConnect.app** to Applications. The build is signed with an Apple Developer ID and notarized, so it launches without a Gatekeeper warning. A `.zip` of the app bundle is published alongside the DMG.
 
-1. Open the DMG.
-2. Drag `MacConnect.app` to `Applications`.
-3. Launch normally — the app is signed with Apple Developer ID and notarized, so Gatekeeper will not warn.
+The direct build updates itself in-app through [Sparkle](https://sparkle-project.org) (Settings → "Check for Updates…", with an optional automatic check); each download is verified with an EdDSA signature before installing.
 
-The binary is universal (Apple Silicon + Intel) and requires macOS 13 or later.
+## Build from source
 
-## Requirements (development)
-
-- macOS 13 or later.
-- Xcode 15+ (or Command Line Tools, in which case `swift test` is unavailable because XCTest ships with Xcode).
-- `/usr/bin/openssl` (present on stock macOS) — used once on first launch to generate the local TLS identity.
-
-## Build and run
+Prerequisites: macOS 13+, Xcode 15+ (or the Command Line Tools — note that `swift test` needs Xcode, which ships XCTest). `/usr/bin/openssl` (present on stock macOS) generates the local TLS identity on first launch.
 
 ```bash
-# Assemble a .app bundle
+git clone https://github.com/AlanHuang99/MacConnect.git
+cd MacConnect
+
+# Develop
+swift build              # debug build
+swift run macconnect     # run without a bundle (no menu-bar item)
+swift test               # unit tests
+xed Package.swift        # open in Xcode
+
+# Assemble a .app bundle and launch it
 ./scripts/build-app.sh release
-
-# Universal (arm64 + x86_64) build
-./scripts/build-app.sh release-universal 0.1.0
-
-# Launch
 open build/MacConnect.app
 ```
 
-For development:
+Assembling the release bundle locally needs no signing secrets. On first launch the app writes an RSA-2048 self-signed certificate and a stable device ID to `~/Library/Application Support/MacConnect/`; trusted-peer certificates are stored alongside as DER files keyed by remote `deviceId`.
 
-```bash
-swift build              # debug build
-swift run macconnect     # runs without bundle (no menu-bar item)
-swift test               # unit tests
-xed Package.swift        # open in Xcode
-```
+## How it works
 
-The first launch generates an RSA-2048 self-signed certificate under `~/Library/Application Support/MacConnect/` and seeds a stable device ID. Trusted-peer certificates are stored alongside as DER files keyed by remote `deviceId`.
+MacConnect implements KDE Connect protocol version 7:
+
+- **Discovery** — subnet-directed UDP broadcasts on every active IPv4 interface (plus the limited broadcast `255.255.255.255`) and mDNS/Bonjour (`_kdeconnect._udp`), so peers are found even where access points filter limited broadcast.
+- **Transport** — a newline-framed plain-TCP identity exchange upgrades to mutual TLS on the same channel; per the protocol, the side that initiated the TCP connection becomes the TLS server. Certificates are pinned per `deviceId` after the first pairing.
+- **Liveness** — TCP keepalive (`SO_KEEPALIVE` plus the Darwin `TCP_KEEPALIVE`/`KEEPINTVL`/`KEEPCNT` family) detects a dead socket in about 60 seconds, and discovery rebuilds on sleep/wake and network changes so peers reconnect without an app restart.
+- **File transfer** — payloads move over a second TLS connection on a port the sender advertises in the share packet.
+
+Protocol references: [KDE Connect Android](https://invent.kde.org/network/kdeconnect-android) (the canonical implementation), [KDE Connect iOS](https://invent.kde.org/network/kdeconnect-ios), and the [Valent protocol notes](https://valent.andyholmes.ca/documentation/protocol.html).
+
+## Tech stack
+
+| Area | Choice |
+|------|--------|
+| Language / UI | Swift, AppKit (menu-bar shell), SwiftUI (popover) |
+| Networking | [SwiftNIO](https://github.com/apple/swift-nio) and [NIOSSL](https://github.com/apple/swift-nio-ssl) for the TCP/TLS link |
+| Discovery | Network.framework (`NWListener` / `NWBrowser`) and BSD sockets for UDP broadcast |
+| TLS identity | `/usr/bin/openssl` for first-launch cert generation; per-device DER pinning |
+| In-app updates | [Sparkle](https://sparkle-project.org) (direct build only) |
+| Minimum target | macOS 13 |
 
 ## Project layout
 
@@ -88,7 +93,7 @@ Sources/
     Packet/                    # NetworkPacket, IdentityPayload, PairPacketBuilder, PacketType
     Network/
       LanLinkProvider.swift    # UDP discovery + TCP listener + outbound dial
-      LanLink.swift            # per-device link + 30 s keepalive ping
+      LanLink.swift            # per-device link wrapper over the TCP channel
       KDEConnectChannelHandler.swift
                                # plain-TCP identity then mTLS upgrade, idle-state close, readBuffer caps
       NIOTransport.swift       # event-loop group + bootstraps + SO_KEEPALIVE/TCP_KEEPALIVE family
@@ -101,65 +106,51 @@ Sources/
   MacConnectApp/
     Resources/Localizable.xcstrings  # en baseline; SwiftPM-processed
     *.swift                          # menu-bar executable (AppKit + SwiftUI popover)
-Tests/MacConnectCoreTests/     # XCTest: packet round-trips, pair timestamp, PeerVerifier, EmbeddedChannel handler
-scripts/build-app.sh           # assembles MacConnect.app; embeds Sparkle for the `direct` channel
+Tests/MacConnectCoreTests/     # XCTest: packet round-trips, pair timestamp, PeerVerifier, EmbeddedChannel handler, liveness
+scripts/build-app.sh           # assembles MacConnect.app; embeds Sparkle for the direct channel
 scripts/sign-app.sh            # Developer ID codesign, signing embedded Sparkle inside-out first
 .github/workflows/             # CI (build+test, lint) and release (sign, notarize, appcast)
 ```
 
-## Protocol
-
-Implemented against KDE Connect protocol version 7. References used:
-
-- [KDE Connect iOS](https://invent.kde.org/network/kdeconnect-ios) — protocol reference.
-- [KDE Connect Android](https://invent.kde.org/network/kdeconnect-android) — canonical implementation.
-- [Valent protocol reference](https://valent.andyholmes.ca/documentation/protocol.html) — packet specification.
-
-Notes specific to this implementation:
-
-- Discovery uses subnet-directed UDP broadcasts (e.g. `192.168.1.255`) on every active IPv4 interface in addition to limited broadcast (`255.255.255.255`). Limited broadcast alone is filtered by many Wi-Fi access points and bridges.
-- Per the protocol, the TCP-connect initiator becomes the TLS server and the TCP-accept side becomes the TLS client. The same channel is used for plain identity then upgraded to TLS via dynamic `ChannelPipeline` reconfiguration in `KDEConnectChannelHandler`.
-- File transfer opens a second TLS connection on a port advertised in `payloadTransferInfo.port`. The receiver writes the payload to `~/Downloads/`, with `(1)`, `(2)` suffixes on filename collisions.
-
 ## Releases
 
-Releases are tagged `vX.Y.Z`. Pushing a tag triggers `.github/workflows/release.yml`, which builds the universal **direct** binary (with Sparkle), signs it with Apple Developer ID + Hardened Runtime (Sparkle's nested helpers signed inside-out), notarizes and staples it, packages a `.zip` and a drag-to-`/Applications` `.dmg`, publishes a GitHub Release with both assets, and refreshes the Sparkle appcast on GitHub Pages.
-
-To cut a release:
+Releases are tagged `vX.Y.Z`. Pushing a tag triggers [`.github/workflows/release.yml`](.github/workflows/release.yml), which builds the universal direct binary (with Sparkle), signs it with Apple Developer ID and Hardened Runtime (Sparkle's nested helpers signed inside-out), notarizes and staples it, packages a `.zip` and a drag-to-Applications `.dmg`, publishes a GitHub Release with both assets, and refreshes the Sparkle appcast on GitHub Pages.
 
 ```bash
-git tag v0.3.0
-git push origin v0.3.0
+git tag v0.3.6
+git push origin v0.3.6
 ```
 
 ## Distribution channels
 
-One source tree builds two products, selected by the third argument to `scripts/build-app.sh` (which sets the `MACCONNECT_SPARKLE` environment variable that `Package.swift` reads):
+One source tree builds two products, selected by an argument to `scripts/build-app.sh` (which sets the `MACCONNECT_SPARKLE` environment variable that `Package.swift` reads):
 
-| Channel | Build | Updates | Sparkle |
-|---------|-------|---------|---------|
+| Channel | Build command | Updates | Sparkle |
+|---------|---------------|---------|---------|
 | **Direct** (GitHub Releases) | `./scripts/build-app.sh release-universal X.Y.Z direct` | In-app, via Sparkle | linked + embedded |
 | **Mac App Store** (default) | `./scripts/build-app.sh release-universal X.Y.Z` | App Store | absent |
 
-All Sparkle code is gated behind the `SPARKLE` compilation condition, set only on the direct build. The default build links no Sparkle, ships no update UI, and carries none of Sparkle's machinery — which the App Store rejects. The App Store submission pipeline itself is not wired up yet; the Sparkle-free build is the groundwork for it.
+All Sparkle code is gated behind the `SPARKLE` compile condition, set only on the direct build. The default build links no Sparkle, ships no update UI, and carries none of Sparkle's machinery, which the App Store rejects. It is the groundwork for a future App Store submission; the submission pipeline itself (sandbox entitlements, provisioning, upload) is not wired up yet.
 
-### Auto-update (Sparkle) — one-time key setup
+### Auto-update key setup (maintainers)
 
-In-app updates verify each download with an EdDSA (ed25519) key pair. Until it is configured, the release workflow still publishes the `.dmg`/`.zip`; it just skips refreshing the appcast (so in-app updates stay on the previous feed), and `build-app.sh` warns that `SUPublicEDKey` is the placeholder.
+In-app updates verify each download with an EdDSA (ed25519) key pair. Until it is configured, the release workflow still publishes the `.dmg`/`.zip`; it just skips refreshing the appcast, and `build-app.sh` warns that `SUPublicEDKey` is the placeholder.
 
 1. Generate the key pair once with Sparkle's `generate_keys` (from the [Sparkle release bundle](https://github.com/sparkle-project/Sparkle/releases)):
    ```bash
-   ./bin/generate_keys                       # stores the private key in your login keychain
+   ./bin/generate_keys                         # stores the private key in your login keychain
    ./bin/generate_keys -x sparkle_private.key  # also export it to a file
    ```
-2. It prints a base64 **public** key. Set it as the repository **variable** `SPARKLE_PUBLIC_ED_KEY` (Settings → Secrets and variables → Actions → Variables). The release build bakes it into `SUPublicEDKey`. The public key is not secret.
-3. Store the exported **private** key (verbatim file contents) as the repository **secret** `SPARKLE_ED_PRIVATE_KEY`. Keep the file out of the repo. Delete it after.
-4. Enable GitHub Pages for the repo, serving the `gh-pages` branch. The feed lives at `https://alanhuang99.github.io/MacConnect/appcast.xml` (`SUFeedURL` in `build-app.sh` — adjust if your Pages URL differs). The release workflow creates and pushes `appcast.xml` there.
+2. Set the printed base64 **public** key as the repository variable `SPARKLE_PUBLIC_ED_KEY` (Settings → Secrets and variables → Actions → Variables). The release build bakes it into `SUPublicEDKey`. The public key is not secret.
+3. Store the exported **private** key (verbatim file contents) as the repository secret `SPARKLE_ED_PRIVATE_KEY`, then delete the local file.
+4. Enable GitHub Pages for the repo (serving the `gh-pages` branch). The feed lives at `https://alanhuang99.github.io/MacConnect/appcast.xml` (`SUFeedURL` in `build-app.sh`); the release workflow creates and pushes `appcast.xml` there.
 
-The first Sparkle-enabled release cannot auto-update users already on an earlier, Sparkle-free build — they download it once from the Releases page, and in-app updates work from the next release onward.
+The first Sparkle-enabled release cannot auto-update users already on an earlier, Sparkle-free build — they download it once from Releases, and in-app updates work from the next release onward.
 
-To test an update locally: build the direct channel at a low version with a real key (`SPARKLE_PUBLIC_ED_KEY=… ./scripts/build-app.sh release 0.3.0 direct`), build a newer version, `sign_update` the newer `.zip`, write a local `appcast.xml` pointing at it (a `file://` enclosure is fine), point `SUFeedURL` at that file, and run the older build's "Check for Updates…".
+## Contributing
+
+Issues and pull requests are welcome. For anything substantial, please open an issue first to discuss the approach. CI builds and tests every push; the `.swiftformat` and `.swiftlint.yml` configs in the repo are enforced by a CI Lint job, so run them locally before pushing. See [`ROADMAP.md`](ROADMAP.md) for planned work.
 
 ## License
 
-GPL-3.0-or-later. The KDE Connect upstream is licensed GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL; this project chooses GPL-3.0-or-later for compatibility with the iOS port. See [`LICENSE`](LICENSE).
+GPL-3.0-or-later. KDE Connect upstream is licensed GPL-2.0-only OR GPL-3.0-only OR LicenseRef-KDE-Accepted-GPL; this project chooses GPL-3.0-or-later for compatibility with the iOS port. See [`LICENSE`](LICENSE).
