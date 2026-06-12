@@ -3,6 +3,14 @@
     <channel>
         <title>MacConnect</title>
         <item>
+            <title>0.3.6</title>
+            <pubDate>Fri, 12 Jun 2026 21:59:10 +0000</pubDate>
+            <sparkle:version>0.3.6</sparkle:version>
+            <sparkle:shortVersionString>0.3.6</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/AlanHuang99/MacConnect/releases/download/v0.3.6/MacConnect-v0.3.6.zip" length="8305173" type="application/octet-stream" sparkle:edSignature="5GwFvlMddARsls5b+ORRJbAu8S97hF23/SYchAnnSUFbe0c2ucXgw8u8X30OP2pAjvSb5zdA+6kmI6tg5RzBAQ=="/>
+        </item>
+        <item>
             <title>0.3.5</title>
             <pubDate>Fri, 12 Jun 2026 14:53:05 +0000</pubDate>
             <sparkle:version>0.3.5</sparkle:version>
