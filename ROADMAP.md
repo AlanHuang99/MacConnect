@@ -44,3 +44,4 @@
 - About section in Settings (version + build + GitHub link); empty-state troubleshooting checklist; ⌘R / ⌘, / ⌘Q keyboard shortcuts (0.2.0).
 - PayloadReceiver writes off the event loop with autoRead backpressure; PluginRegistry capability cache; long-lived UDP broadcast socket; strict-concurrency complete (0.2.0).
 - `Localizable.xcstrings` scaffolding via SwiftPM resources; `.swiftlint.yml` / `.swiftformat` and a CI Lint job (0.2.0).
+- Sleep/wake + Wi-Fi-change recovery: discovery rebuilds and stale links drop on `NSWorkspace.didWake` and `NWPathMonitor` interface changes, so peers reconnect without an app restart; the popover refresh button now does a full re-discover (0.2.2).

@@ -12,6 +12,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private var popoverEventMonitor: Any?
     private var welcomeWindowController: WelcomeWindowController?
     private var toastSubscription: AnyCancellable?
+    private var wakeObserver: NSObjectProtocol?
 
     static func main() {
         let app = NSApplication.shared
@@ -44,6 +45,8 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
             }
         }
 
+        observeSystemWake()
+
         // Services rescan is a full Launch Services walk; defer it a beat
         // and only run when the Info.plist NSServices block actually
         // changed since the last launch.
@@ -53,12 +56,36 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     }
 
     func applicationWillTerminate(_: Notification) {
+        if let wakeObserver {
+            NSWorkspace.shared.notificationCenter.removeObserver(wakeObserver)
+            self.wakeObserver = nil
+        }
         // Time-boxed teardown. Each TCP graceful close requires a peer
         // FIN-ACK; sleeping phones / dead Wi-Fi can leave the kernel
         // waiting the full close timeout. We give all closes a budget,
         // then let the kernel reap any stragglers when the process exits.
         LanLinkProvider.shared.stop(deadline: .now() + 0.75)
         NIOTransport.shared.shutdown(deadline: .now() + 0.5)
+    }
+
+    /// Rebuild discovery when the Mac wakes. On sleep the UDP listener, mDNS
+    /// browser, and broadcast socket stop delivering on the now-stale
+    /// interfaces and never recover on their own, so peers became invisible
+    /// until the app was restarted. `restartDiscovery()` is debounced and
+    /// no-ops until networking has started, so an early or duplicate wake is
+    /// harmless. The NWPathMonitor inside LanLinkProvider catches the same
+    /// event from the network side; both firing just collapses into one
+    /// rebuild. Sleep/wake posts on `NSWorkspace`'s own notification center,
+    /// not `NotificationCenter.default`.
+    private func observeSystemWake() {
+        wakeObserver = NSWorkspace.shared.notificationCenter.addObserver(
+            forName: NSWorkspace.didWakeNotification,
+            object: nil,
+            queue: .main
+        ) { _ in
+            Log.app.notice("System woke; rebuilding discovery")
+            LanLinkProvider.shared.restartDiscovery()
+        }
     }
 
     private static func registerServicesIfNeeded() {
