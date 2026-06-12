@@ -43,6 +43,11 @@ public final class DeviceManager: ObservableObject {
         // every disconnect should invalidate the now-playing cache,
         // not just an explicit unpair.
         MprisStore.shared.clear(deviceId: deviceId)
+        // Battery is level-triggered (a value stays valid until the next
+        // packet), so a disconnect must invalidate it too — otherwise a
+        // reconnecting peer briefly shows the previous charge. Mirrors the
+        // MPRIS clear above; previously battery alone leaked across links.
+        BatteryStore.shared.clear(deviceId: deviceId)
         objectWillChange.send()
     }
 
@@ -145,5 +150,192 @@ public final class DeviceManager: ObservableObject {
             device.incomingPairRequest = false
         }
         objectWillChange.send()
+    }
+
+    // MARK: - Liveness reconciliation
+
+    //
+    // The old model derived "online" purely from link events: attach on TLS
+    // secure, detach on socket close. When a close event never arrives — and
+    // display sleep, screen saver, and phone Doze fire no socket-close, no
+    // NSWorkspace wake, no NWPathMonitor change, and freeze NIO's read-idle
+    // timer — a device stayed "online" with hours-old battery / now-playing
+    // forever. This periodic pass re-derives reachability from freshness using
+    // the wall clock (Date), which keeps counting across sleep, so it
+    // self-corrects without depending on any event firing. `lastSeen` is
+    // already stamped on every inbound packet via `upsert`, and a peer's reply
+    // to our silent probe refreshes it — so a live link stays fresh and a dead
+    // one ages out.
+
+    /// How often the reconciler runs.
+    public static let reconcileInterval: TimeInterval = 10
+    /// A reachable, paired peer silent this long — despite us probing it — is
+    /// treated as gone and its link dropped so discovery re-establishes it.
+    public static let livenessTTL: TimeInterval = 60
+    /// A reachable, paired peer quiet at least this long gets a silent probe
+    /// (battery / mpris request — answered by the peer but never surfaced as a
+    /// notification). Chatty links stay above this threshold on their own.
+    public static let probeQuietThreshold: TimeInterval = 15
+    /// An unpaired, offline discovery ghost older than this is dropped from the
+    /// list. Paired peers are always kept so "last seen" stays visible.
+    public static let unpairedEvictionAge: TimeInterval = 180
+
+    private var reconcileTimer: Timer?
+
+    /// Start the periodic liveness pass. Idempotent; wired from app launch.
+    public func startReconciliation() {
+        guard reconcileTimer == nil else { return }
+        let timer = Timer(timeInterval: Self.reconcileInterval, repeats: true) { [weak self] _ in
+            // Re-bind the weak `self` to a let before the inner Task captures
+            // it: strict concurrency rejects an inner concurrent closure
+            // reading the captured `self` var directly. Same dance as
+            // LanLinkProvider's onPacket handler.
+            let manager = self
+            Task { @MainActor in manager?.reconcile() }
+        }
+        // `.common` so the pass keeps firing while the popover tracks a menu /
+        // modal run-loop mode, not only in default mode.
+        RunLoop.main.add(timer, forMode: .common)
+        reconcileTimer = timer
+    }
+
+    /// Stop the liveness pass. Called on app termination.
+    public func stopReconciliation() {
+        reconcileTimer?.invalidate()
+        reconcileTimer = nil
+    }
+
+    /// One reconciliation pass. `now` is injectable for tests.
+    func reconcile(now: Date = Date()) {
+        var evictIds: [String] = []
+        for device in devices.values {
+            let age = now.timeIntervalSince(device.lastSeen)
+            if Self.shouldEvictUnpaired(
+                isPaired: device.isPaired, isReachable: device.isReachable,
+                age: age, maxAge: Self.unpairedEvictionAge
+            ) {
+                evictIds.append(device.id)
+                continue
+            }
+            guard device.isReachable, device.isPaired else { continue }
+            // Probe eligibility is the peer's advertised capabilities ∩ our
+            // local toggles — NOT our toggles alone (which default to on). A
+            // paired-but-limited client that advertises neither battery nor
+            // mpris yields no probes, so `livenessAction` returns `.keep` and
+            // never flaps it offline for ignoring packets it never claimed.
+            let probes = Self.supportedProbes(
+                batteryEnabled: Settings.shared.isPluginEnabled("battery", forDevice: device.id),
+                mprisEnabled: Settings.shared.isPluginEnabled("mpris", forDevice: device.id),
+                peerIncoming: Set(device.incomingCapabilities),
+                peerOutgoing: Set(device.outgoingCapabilities)
+            )
+            switch Self.livenessAction(
+                age: age, probeable: !probes.isEmpty,
+                ttl: Self.livenessTTL, quiet: Self.probeQuietThreshold
+            ) {
+            case .keep:
+                break
+            case .probe:
+                sendLivenessProbe(probes, to: device)
+            case .drop:
+                Log.net
+                    .notice(
+                        "Liveness TTL exceeded for \(device.id, privacy: .public) (\(Int(age), privacy: .public)s silent); marking offline"
+                    )
+                markGone(device)
+            }
+        }
+        for id in evictIds {
+            devices.removeValue(forKey: id)
+            BatteryStore.shared.clear(deviceId: id)
+            MprisStore.shared.clear(deviceId: id)
+        }
+        // Tick so "last seen Nm ago" advances even when nothing else changed.
+        objectWillChange.send()
+    }
+
+    /// Drive a probably-dead peer offline now and drop its link so discovery
+    /// redials it. The drop cascades back through `detach` (idempotent with the
+    /// synchronous changes here); doing both gives instant UI feedback while
+    /// guaranteeing the stale link is actually torn down so a reconnect isn't
+    /// blocked by the `existing.isSecure` guard in discovery.
+    private func markGone(_ device: Device) {
+        device.isReachable = false
+        device.link = nil
+        BatteryStore.shared.clear(deviceId: device.id)
+        MprisStore.shared.clear(deviceId: device.id)
+        LanLinkProvider.shared.dropLink(deviceId: device.id)
+    }
+
+    /// Send the precomputed silent liveness probes — `battery` / `mpris`
+    /// request packets the peer answers without raising a banner (the same
+    /// ones the popover sends on open), which is why this works where the
+    /// reverted `_keepalive` ping did not. The peer's reply flows back through
+    /// `dispatch`, refreshing `lastSeen` and proving the link is alive. The set
+    /// is already filtered to plugins enabled locally AND advertised by the
+    /// peer (see `supportedProbes`), so every probe here can actually land.
+    private func sendLivenessProbe(_ probes: Set<ProbeKind>, to device: Device) {
+        if probes.contains(.battery) { BatteryPlugin.requestUpdate(from: device) }
+        if probes.contains(.mpris) { MprisPlugin.requestNowPlaying(from: device) }
+    }
+
+    enum LivenessAction: Equatable {
+        case keep
+        case probe
+        case drop
+    }
+
+    /// Pure liveness decision for a reachable, paired peer — no timers, links,
+    /// or singletons — so it's unit-testable. A peer we cannot probe (all probe
+    /// plugins disabled) is never dropped on silence alone: we can't tell dead
+    /// from idle, so we defer to the link-level mechanisms (no regression).
+    nonisolated static func livenessAction(
+        age: TimeInterval, probeable: Bool, ttl: TimeInterval, quiet: TimeInterval
+    ) -> LivenessAction {
+        if age > ttl { return probeable ? .drop : .keep }
+        if probeable, age > quiet { return .probe }
+        return .keep
+    }
+
+    /// Pure eviction predicate: only unpaired peers that are already offline
+    /// and stale get removed. Paired peers and currently-reachable peers stay.
+    nonisolated static func shouldEvictUnpaired(
+        isPaired: Bool, isReachable: Bool, age: TimeInterval, maxAge: TimeInterval
+    ) -> Bool {
+        !isPaired && !isReachable && age > maxAge
+    }
+
+    enum ProbeKind: Hashable {
+        case battery
+        case mpris
+    }
+
+    /// Which silent liveness probes this peer will actually answer. A probe
+    /// counts only when the plugin is enabled locally for the peer AND the peer
+    /// advertises it — either it sends the state packet (`kdeconnect.battery` /
+    /// `kdeconnect.mpris` in its outgoing capabilities) or it accepts the
+    /// request (`*.request` in its incoming capabilities). Gating on the peer's
+    /// advertised capabilities, not just our local toggles (which default to
+    /// on), is what stops a paired-but-limited client from being probed with
+    /// packets it ignores and then dropped offline every TTL. Pure and
+    /// nonisolated so it's unit-testable.
+    nonisolated static func supportedProbes(
+        batteryEnabled: Bool,
+        mprisEnabled: Bool,
+        peerIncoming: Set<String>,
+        peerOutgoing: Set<String>
+    ) -> Set<ProbeKind> {
+        var probes: Set<ProbeKind> = []
+        if batteryEnabled,
+           peerIncoming.contains(PacketType.batteryRequest) || peerOutgoing.contains(PacketType.battery)
+        {
+            probes.insert(.battery)
+        }
+        if mprisEnabled,
+           peerIncoming.contains(PacketType.mprisRequest) || peerOutgoing.contains(PacketType.mpris)
+        {
+            probes.insert(.mpris)
+        }
+        return probes
     }
 }

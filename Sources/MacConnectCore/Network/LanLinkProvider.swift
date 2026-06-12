@@ -280,6 +280,29 @@ public final class LanLinkProvider: @unchecked Sendable {
         }
     }
 
+    /// Force a single peer's link down. Used by the liveness reconciler when a
+    /// device exceeds its freshness TTL with no close / wake / path event to
+    /// rely on. Mirrors `dropAllLinksForRestart` for one device: pull it from
+    /// the maps (so the eventual channel-close is a no-op), clear its dial
+    /// cooldown so it can redial immediately, disconnect the socket, and fire
+    /// `notifyClosed` so `DeviceManager.detach` marks it offline. Idempotent —
+    /// a no-op if the link is already gone.
+    public func dropLink(deviceId: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.linkLock.lock()
+            let link = self.linksByDeviceId.removeValue(forKey: deviceId)
+            if let link {
+                self.channelToDeviceId.removeValue(forKey: ObjectIdentifier(link.activeChannel))
+            }
+            self.dialCooldown.clear(deviceId: deviceId)
+            self.linkLock.unlock()
+            guard let link else { return }
+            link.disconnect()
+            link.notifyClosed()
+        }
+    }
+
     // MARK: - Network path monitoring
 
     /// Rebuild discovery when connectivity returns or the interface set
