@@ -1,0 +1,14 @@
+<?xml version="1.0" standalone="yes"?>
+<rss xmlns:sparkle="http://www.andymatuschak.org/xml-namespaces/sparkle" version="2.0">
+    <channel>
+        <title>MacConnect</title>
+        <item>
+            <title>0.3.5</title>
+            <pubDate>Fri, 12 Jun 2026 14:53:05 +0000</pubDate>
+            <sparkle:version>0.3.5</sparkle:version>
+            <sparkle:shortVersionString>0.3.5</sparkle:shortVersionString>
+            <sparkle:minimumSystemVersion>13.0</sparkle:minimumSystemVersion>
+            <enclosure url="https://github.com/AlanHuang99/MacConnect/releases/download/v0.3.5/MacConnect-v0.3.5.zip" length="8285166" type="application/octet-stream" sparkle:edSignature="gEa8NJ+V96DjieOJpOMgcWT0pOQ2oY6lQclQCFeUDX6iMcjJrCap4tvPySqXY16Z/b4sB2pHS46XLe+3Dq8ZBA=="/>
+        </item>
+    </channel>
+</rss>
