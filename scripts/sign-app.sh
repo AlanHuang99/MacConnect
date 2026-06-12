@@ -44,8 +44,15 @@ if [[ ! -f "$ENTITLEMENTS" ]]; then
   exit 1
 fi
 
+# Re-sign nested code, preserving any entitlements the original signature
+# carried. Sparkle's helpers ship signed (Autoupdate carries an
+# application-identifier entitlement, and the sandboxed variant of the XPC
+# services carries sandbox/network entitlements); a plain --force re-sign would
+# strip them. The host app is signed separately below with its own
+# --entitlements, so this preserve only affects the nested helpers.
 sign() {
   codesign --force --options runtime --timestamp \
+    --preserve-metadata=entitlements \
     "${KEYCHAIN_ARG[@]}" \
     --sign "$IDENTITY" \
     "$@"
