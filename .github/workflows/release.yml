@@ -160,29 +160,67 @@ jobs:
         run: |
           security delete-keychain "$RUNNER_TEMP/build.keychain-db" || true
 
+      - name: Assemble release notes from CHANGELOG
+        id: notes
+        run: |
+          set -euo pipefail
+          VERSION="${{ steps.ver.outputs.version }}"
+          TAG="${{ steps.ver.outputs.tag }}"
+          REPO="${{ github.repository }}"
+          NOTES="$RUNNER_TEMP/notes.md"
+
+          # Standing install preamble (identical every release).
+          cat > "$NOTES" <<EOF
+          ## Install
+
+          1. Download \`MacConnect-${TAG}.dmg\` (or the \`.zip\`).
+          2. Open the DMG and drag MacConnect.app to Applications.
+          3. Launch normally — the app is signed with Apple Developer ID and notarized, so Gatekeeper will not warn.
+
+          Universal binary: arm64 + x86_64. Requires macOS 13+.
+          EOF
+
+          # This version's section from CHANGELOG.md (between "## [VERSION]" and
+          # the next "## [" header or the trailing link-reference block).
+          SECTION="$(awk -v v="$VERSION" '
+            /^## \[/ { if (inblk) exit; inblk = ($0 ~ "^## \\[" v "\\]"); next }
+            /^\[[^]]+\]: / { if (inblk) exit }
+            inblk { print }
+          ' CHANGELOG.md)"
+
+          if [ -n "$(printf '%s' "$SECTION" | tr -d '[:space:]')" ]; then
+            printf '\n## Changes\n%s\n' "$SECTION" >> "$NOTES"
+            echo "fallback=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "::warning::No CHANGELOG.md section for $VERSION; using auto-generated notes."
+            echo "fallback=true" >> "$GITHUB_OUTPUT"
+          fi
+
+          printf '\nSee [README](https://github.com/%s/blob/main/README.md) for what'\''s working and what'\''s not.\n' "$REPO" >> "$NOTES"
+          echo "path=$NOTES" >> "$GITHUB_OUTPUT"
+          echo "----- release notes -----"; cat "$NOTES"
+
       - name: Publish GitHub Release
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          gh release create "${{ steps.ver.outputs.tag }}" \
-            --title "MacConnect ${{ steps.ver.outputs.tag }}" \
-            --generate-notes \
-            --notes-file - <<'NOTES_EOF' \
-            "build/MacConnect-${{ steps.ver.outputs.tag }}.zip" \
-            "build/MacConnect-${{ steps.ver.outputs.tag }}.dmg"
-
-          ## Install
-
-          1. Download `MacConnect-${{ steps.ver.outputs.tag }}.dmg` (or the `.zip`).
-          2. Open the DMG and drag MacConnect.app to Applications.
-          3. Launch normally — the app is signed with Apple Developer ID and
-             notarized, so Gatekeeper will not warn.
-
-          Universal binary: arm64 + x86_64. Requires macOS 13+.
-
-          See [README](https://github.com/${{ github.repository }}/blob/main/README.md)
-          for what's working and what's not.
-          NOTES_EOF
+          set -eo pipefail
+          TAG="${{ steps.ver.outputs.tag }}"
+          NOTES_PATH="${{ steps.notes.outputs.path }}"
+          if [ "${{ steps.notes.outputs.fallback }}" = "true" ]; then
+            gh release create "$TAG" \
+              --title "MacConnect $TAG" \
+              --notes-file "$NOTES_PATH" \
+              --generate-notes \
+              "build/MacConnect-$TAG.zip" \
+              "build/MacConnect-$TAG.dmg"
+          else
+            gh release create "$TAG" \
+              --title "MacConnect $TAG" \
+              --notes-file "$NOTES_PATH" \
+              "build/MacConnect-$TAG.zip" \
+              "build/MacConnect-$TAG.dmg"
+          fi
 
       # --- Sparkle appcast (Direct channel auto-update) ---
       # Gated on the signing secret so a release made before the Sparkle key is
