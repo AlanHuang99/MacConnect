@@ -6,6 +6,13 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.7] - 2026-06-14
+
+### Fixed
+
+- Discovery could silently stop finding and connecting to every device: the menu kept showing stale "online" badges while nothing actually connected, and refreshing did nothing, until the app was quit and relaunched. Closing a superseded connection while the discovery lock was held re-entered that same non-recursive lock on the same thread and deadlocked the discovery queue, halting all broadcasting, dialing, and reconnecting. A reconnect race, such as several devices reconnecting at once after a reboot, would trigger it. ([#26](https://github.com/AlanHuang99/MacConnect/pull/26))
+- Update prompts on the direct (Sparkle) build now bring the app to the front when an update is presented, so they are visible for this menu-bar app instead of opening behind other windows. ([#27](https://github.com/AlanHuang99/MacConnect/pull/27))
+
 ## [0.3.6] - 2026-06-12
 
 ### Fixed
@@ -27,6 +34,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Discovery rebuilds on sleep/wake and network changes (Wi-Fi switch, dock/undock) and stale links are dropped, so peers reconnect without an app restart. ([#21](https://github.com/AlanHuang99/MacConnect/pull/21))
 
-[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.6...HEAD
+[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.7...HEAD
+[0.3.7]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/AlanHuang99/MacConnect/releases/tag/v0.3.5
