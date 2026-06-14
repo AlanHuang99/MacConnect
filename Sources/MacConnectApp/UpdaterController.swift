@@ -86,15 +86,43 @@ final class UpdaterController: ObservableObject {
 }
 
 #if SPARKLE
-/// Brings MacConnect forward whenever Sparkle is about to show a modal update
-/// window. The app runs as an accessory (`LSUIElement`) with no Dock icon, so
-/// without an explicit activation Sparkle's dialogs — most visibly the "Install
-/// and Relaunch" prompt — can open behind the frontmost app where the user
-/// can't see or click them, leaving an update silently stuck. Sparkle invokes
-/// the delegate on the main thread; we hop to the main actor (matching the
-/// app's concurrency model) to call the AppKit activation.
+/// Brings MacConnect forward when Sparkle is about to present update UI. The app
+/// runs as an accessory (`LSUIElement`) with no Dock icon, so without an
+/// explicit activation Sparkle's windows can open behind the frontmost app
+/// where the user can't see or act on them — the reported "Install and
+/// Relaunch" stuck-behind symptom.
+///
+/// Coverage uses the documented background-app path
+/// (https://sparkle-project.org/documentation/gentle-reminders):
+/// `supportsGentleScheduledUpdateReminders` opts in, and
+/// `standardUserDriverWillHandleShowingUpdate` activates the app when an update
+/// is first presented (scheduled or user-initiated). `standardUserDriverWillShowModalAlert`
+/// covers the NSAlert dialogs (errors, "no update found"). Sparkle exposes no
+/// delegate hook for the post-download status window, so if the user starts an
+/// update and switches away mid-download, that final install prompt can still
+/// surface behind other apps; the update-presentation and alert cases — which
+/// is where this app actually got stuck — are handled.
+///
+/// Sparkle invokes the delegate on the main thread; we hop to the main actor
+/// (matching the app's concurrency model) for the AppKit activation.
 private final class AccessoryActivatingUserDriverDelegate: NSObject, SPUStandardUserDriverDelegate {
+    var supportsGentleScheduledUpdateReminders: Bool {
+        true
+    }
+
+    func standardUserDriverWillHandleShowingUpdate(
+        _: Bool,
+        forUpdate _: SUAppcastItem,
+        state _: SPUUserUpdateState
+    ) {
+        activateApp()
+    }
+
     func standardUserDriverWillShowModalAlert() {
+        activateApp()
+    }
+
+    private func activateApp() {
         Task { @MainActor in
             NSApplication.shared.activate(ignoringOtherApps: true)
         }
