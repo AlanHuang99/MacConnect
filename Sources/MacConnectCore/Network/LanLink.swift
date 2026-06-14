@@ -47,8 +47,9 @@ public final class LanLink: @unchecked Sendable {
         return channel
     }
 
-    /// Replace the active channel with a newer connection. The old
-    /// channel is closed; the new one becomes the send target.
+    /// Replace the active channel with a newer connection and return the
+    /// superseded channel for the caller to close (or `nil` if unchanged).
+    /// The old channel is intentionally NOT closed here — see below.
     ///
     /// `_isSecure` is reset to `false` because the new channel has not
     /// completed its TLS handshake yet. Without this reset, `send()`
@@ -59,15 +60,22 @@ public final class LanLink: @unchecked Sendable {
     /// like the KDE Connect iOS app that cycle TCP every 5 s). The
     /// flag flips back to `true` when LanLinkProvider.handleSecured
     /// fires for the new channel.
-    public func replaceChannel(with newChannel: Channel) {
+    ///
+    /// Why the close is deferred to the caller: the caller
+    /// (`LanLinkProvider.handleIdentity`) holds `linkLock` while replacing
+    /// the channel, and `Channel.close` can run synchronously on the calling
+    /// event-loop thread — firing `channelInactive` → `onClose` →
+    /// `handleClosed`, which takes that same non-recursive `linkLock`.
+    /// Closing inline therefore self-deadlocks the discovery queue. The
+    /// caller closes the returned channel only after releasing `linkLock`.
+    @discardableResult
+    public func replaceChannel(with newChannel: Channel) -> Channel? {
         lock.lock()
         let old = channel
         channel = newChannel
         _isSecure = false
         lock.unlock()
-        if old !== newChannel {
-            old.close(promise: nil)
-        }
+        return old !== newChannel ? old : nil
     }
 
     public func deliverPacket(_ packet: NetworkPacket) {
