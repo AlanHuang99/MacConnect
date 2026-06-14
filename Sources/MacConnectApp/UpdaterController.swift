@@ -1,6 +1,7 @@
 import Combine
 import Foundation
 #if SPARKLE
+import AppKit
 import Sparkle
 #endif
 
@@ -35,6 +36,10 @@ final class UpdaterController: ObservableObject {
 
     #if SPARKLE
     private let controller: SPUStandardUpdaterController
+    /// Retained so Sparkle's weak `userDriverDelegate` reference stays alive
+    /// for the life of the (singleton) updater. Brings the menu-bar app
+    /// forward when Sparkle is about to show update UI — see the type's note.
+    private let userDriver = AccessoryActivatingUserDriverDelegate()
     #endif
 
     private init() {
@@ -45,7 +50,7 @@ final class UpdaterController: ObservableObject {
         controller = SPUStandardUpdaterController(
             startingUpdater: true,
             updaterDelegate: nil,
-            userDriverDelegate: nil
+            userDriverDelegate: userDriver
         )
         controller.updater.publisher(for: \.canCheckForUpdates)
             .receive(on: RunLoop.main)
@@ -79,3 +84,20 @@ final class UpdaterController: ObservableObject {
         }
     }
 }
+
+#if SPARKLE
+/// Brings MacConnect forward whenever Sparkle is about to show a modal update
+/// window. The app runs as an accessory (`LSUIElement`) with no Dock icon, so
+/// without an explicit activation Sparkle's dialogs — most visibly the "Install
+/// and Relaunch" prompt — can open behind the frontmost app where the user
+/// can't see or click them, leaving an update silently stuck. Sparkle invokes
+/// the delegate on the main thread; we hop to the main actor (matching the
+/// app's concurrency model) to call the AppKit activation.
+private final class AccessoryActivatingUserDriverDelegate: NSObject, SPUStandardUserDriverDelegate {
+    func standardUserDriverWillShowModalAlert() {
+        Task { @MainActor in
+            NSApplication.shared.activate(ignoringOtherApps: true)
+        }
+    }
+}
+#endif
