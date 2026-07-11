@@ -244,12 +244,15 @@ public final class DeviceManager: ObservableObject {
             )
             // For un-probeable peers the peer's own UDP announcements are
             // the liveness signal (a MacConnect announces every 5 s for
-            // its whole life). Freshness is judged against the reconciler's
-            // injectable `now` so the decision stays testable.
-            let announcing = !probes.isEmpty
-                ? false
-                : LanLinkProvider.shared.lastAnnounce(deviceId: device.id)
-                .map { now.timeIntervalSince($0) <= LanLinkProvider.announceQuietThreshold } ?? false
+            // its whole life). `nil` = no announcement ever received (the
+            // peer connected inbound and its UDP doesn't reach us) — a
+            // distinct state from "was announcing and stopped". Freshness
+            // is judged against the reconciler's injectable `now` so the
+            // decision stays testable.
+            let announcing: Bool? = probes.isEmpty
+                ? LanLinkProvider.shared.lastAnnounce(deviceId: device.id)
+                .map { now.timeIntervalSince($0) <= LanLinkProvider.announceQuietThreshold }
+                : nil
             switch Self.livenessAction(
                 age: age, probeable: !probes.isEmpty, peerAnnouncing: announcing,
                 ttl: Self.livenessTTL, quiet: Self.probeQuietThreshold,
@@ -325,14 +328,21 @@ public final class DeviceManager: ObservableObject {
     /// ends, so neither can probe the other, and after a silent vanish
     /// both sides kept mutually stale links that blocked every re-dial.
     /// Now the peer's own discovery announcements substitute for a probe
-    /// past the `hardTTL` ceiling: still announcing → the peer is alive
-    /// but the link is suspect, so re-dial and replace it in place (no
-    /// offline flap; healthy idle Mac pairs land here every ~2 minutes
-    /// since they exchange no TCP at rest); announcements gone too →
-    /// the peer really left, drop so it shows offline and reconnects on
-    /// its next announcement.
+    /// past the `hardTTL` ceiling: still announcing (`true`) → the peer is
+    /// alive but the link is suspect, so re-dial and replace it in place
+    /// (no offline flap; healthy idle Mac pairs land here every ~2 minutes
+    /// since they exchange no TCP at rest); was announcing and stopped
+    /// (`false`) → the peer really left, drop so it shows offline and
+    /// reconnects on its next announcement.
+    ///
+    /// `peerAnnouncing == nil` means no announcement was ever received —
+    /// a peer that connected inbound while its UDP doesn't reach us
+    /// (broadcast-filtered network). That is unknown, not dead: keep the
+    /// link and defer to the transport-level read-idle close, exactly the
+    /// pre-hard-TTL behaviour for that class of peer. Only a peer whose
+    /// announcements were once heard and then stopped is treated as gone.
     nonisolated static func livenessAction(
-        age: TimeInterval, probeable: Bool, peerAnnouncing: Bool,
+        age: TimeInterval, probeable: Bool, peerAnnouncing: Bool?,
         ttl: TimeInterval, quiet: TimeInterval, hardTTL: TimeInterval
     ) -> LivenessAction {
         if probeable {
@@ -340,8 +350,12 @@ public final class DeviceManager: ObservableObject {
             if age > quiet { return .probe }
             return .keep
         }
-        if age > hardTTL { return peerAnnouncing ? .redial : .drop }
-        return .keep
+        guard age > hardTTL else { return .keep }
+        switch peerAnnouncing {
+        case .some(true): return .redial
+        case .some(false): return .drop
+        case .none: return .keep
+        }
     }
 
     /// Pure eviction predicate: only unpaired peers that are already offline

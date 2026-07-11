@@ -13,8 +13,11 @@ final class LivenessReconcileTests: XCTestCase {
     private let hardTTL: TimeInterval = 120
     private let maxAge: TimeInterval = 180
 
+    /// `announcing` defaults to `.some(false)` — "was announcing, went
+    /// quiet" — the state a silently vanished peer is actually in. Pass
+    /// `nil` for a peer whose announcements were never received at all.
     private func action(
-        age: TimeInterval, probeable: Bool, announcing: Bool = false
+        age: TimeInterval, probeable: Bool, announcing: Bool? = false
     ) -> DeviceManager.LivenessAction {
         DeviceManager.livenessAction(
             age: age, probeable: probeable, peerAnnouncing: announcing,
@@ -75,6 +78,17 @@ final class LivenessReconcileTests: XCTestCase {
     /// broadcast reachability must not override it.
     func testAnnouncingDoesNotRescueProbeablePeerPastTTL() {
         XCTAssertEqual(action(age: 75, probeable: true, announcing: true), .drop)
+    }
+
+    /// The Codex review case on #28: no announcement ever received is
+    /// unknown, not dead. A peer that connected inbound while its UDP
+    /// doesn't reach us (broadcast-filtered network) must not be dropped on
+    /// TCP silence alone — that would flap a possibly-healthy link with no
+    /// discovery signal to reconnect it. It stays kept, deferred to the
+    /// transport-level read-idle close, exactly as before the hard TTL.
+    func testUnprobeablePeerWithNoAnnouncementHistoryIsKept() {
+        XCTAssertEqual(action(age: hardTTL + 0.01, probeable: false, announcing: nil), .keep)
+        XCTAssertEqual(action(age: 3600, probeable: false, announcing: nil), .keep)
     }
 
     func testEvictsStaleOfflineUnpairedGhost() {
