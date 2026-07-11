@@ -42,18 +42,13 @@ final class LanLinkHarnessTests: XCTestCase {
     override func tearDownWithError() throws {
         let id = peerId!
         provider.dropLink(deviceId: id)
+        // Cleanup stays scoped to this test's own device — no global
+        // reconcile pass, and no trusted-devices rewrite (the preferences
+        // plist is the one resource genuinely shared across parallel test
+        // worker processes; in-memory singletons are per-process, and
+        // XCTest runs a class's methods serially within a process).
         MainActor.assumeIsolated {
-            if let device = DeviceManager.shared.devices[id] {
-                // Un-pair directly (not via `unpair`, which rewrites the
-                // shared trusted-devices default — parallel test workers
-                // share that plist and read-modify-write races corrupt it).
-                device.isPaired = false
-                device.isReachable = false
-                device.link = nil
-            }
-            // Unpaired + unreachable + stale → evicted, so the shared
-            // manager carries nothing across tests.
-            DeviceManager.shared.reconcile(now: Date().addingTimeInterval(100_000))
+            DeviceManager.shared.removeDevice(id: id)
         }
         CertificateService.shared.deleteRemoteCert(deviceId: id)
         provider.localAddressesOverride = nil

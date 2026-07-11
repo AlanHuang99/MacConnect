@@ -366,6 +366,17 @@ public final class DeviceManager: ObservableObject {
         !isPaired && !isReachable && age > maxAge
     }
 
+    /// Test seam: remove one device outright. The loopback harness's
+    /// teardown uses this so cleanup stays scoped to the device the test
+    /// created, instead of driving a future-dated global `reconcile` whose
+    /// eviction pass would touch every device in the shared manager.
+    func removeDevice(id: String) {
+        devices.removeValue(forKey: id)
+        BatteryStore.shared.clear(deviceId: id)
+        MprisStore.shared.clear(deviceId: id)
+        objectWillChange.send()
+    }
+
     enum ProbeKind: Hashable {
         case battery
         case mpris
