@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.3.8] - 2026-07-11
+
 ### Fixed
 
-- Two Macs no longer lose each other until a manual refresh after one goes offline and comes back. Three fixes work together. The discovery listener now retries with backoff when its port bind fails — a refresh or wake rebuild raced the old listener's asynchronous teardown for the port, and losing that race silently left the app deaf to every peer announcement until the next rebuild (caught live: the other Mac announced every 5 seconds into a dead listener while both sides looked idle). The liveness reconciler can now retire a stale link to a peer it has no silent probe for — two MacConnects advertise battery and media-control as receivers on both ends, so neither could probe the other and a stale Mac↔Mac link was kept forever; past a 2-minute ceiling of TCP silence the link is now re-dialed in place while the peer keeps announcing, or dropped once the peer's announcements stop too. And a peer that comes back on a new IP address is reconnected within a few seconds: when a peer announces from a new address and its old one has gone quiet, the stale link is dropped and re-dialed immediately (multi-homed peers announce from every interface, so they are not affected).
+- Two Macs no longer lose each other until a manual refresh after one goes offline and comes back. Three fixes work together. The discovery listener now retries with backoff when its port bind fails — a refresh or wake rebuild raced the old listener's asynchronous teardown for the port, and losing that race silently left the app deaf to every peer announcement until the next rebuild (caught live: the other Mac announced every 5 seconds into a dead listener while both sides looked idle). The liveness reconciler can now retire a stale link to a peer it has no silent probe for — two MacConnects advertise battery and media-control as receivers on both ends, so neither could probe the other and a stale Mac↔Mac link was kept forever; past a 2-minute ceiling of TCP silence the link is now re-dialed in place while the peer keeps announcing, or dropped once the peer's announcements stop too. And a peer that comes back on a new IP address is reconnected within a few seconds: when a peer announces from a new address and its old one has gone quiet, the stale link is dropped and re-dialed immediately (multi-homed peers announce from every interface, so they are not affected). ([#28](https://github.com/AlanHuang99/MacConnect/pull/28))
 - The Send file picker no longer opens with dead, unclickable controls that forced several attempts. The popover (and its click-outside dismiss monitor) now closes before the picker is presented, the app temporarily becomes a regular app so the panel can take real keyboard focus, and the panel runs modally — the same discipline the Services-menu flow already used.
 
 ### Changed
@@ -44,7 +46,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Discovery rebuilds on sleep/wake and network changes (Wi-Fi switch, dock/undock) and stale links are dropped, so peers reconnect without an app restart. ([#21](https://github.com/AlanHuang99/MacConnect/pull/21))
 
-[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.7...HEAD
+[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.8...HEAD
+[0.3.8]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.5...v0.3.6
 [0.3.5]: https://github.com/AlanHuang99/MacConnect/releases/tag/v0.3.5
