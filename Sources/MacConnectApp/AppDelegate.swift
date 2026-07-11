@@ -245,7 +245,11 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         }
     }
 
-    private func closePopover() {
+    /// Internal (not private) because StatusView calls it before
+    /// presenting the file picker: the `.transient` popover and its
+    /// global dismiss monitor fight any modal panel for key-window
+    /// status, so both must be torn down before the panel comes up.
+    func closePopover() {
         if popover.isShown { popover.performClose(nil) }
         if let monitor = popoverEventMonitor {
             NSEvent.removeMonitor(monitor)

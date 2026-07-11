@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Fixed
+
+- The Send file picker no longer opens with dead, unclickable controls that forced several attempts. The popover (and its click-outside dismiss monitor) now closes before the picker is presented, the app temporarily becomes a regular app so the panel can take real keyboard focus, and the panel runs modally — the same discipline the Services-menu flow already used.
+
 ### Changed
 
 - Push Clipboard is now a one-click button on each device row, next to Send. Both are compact icon buttons (paperclip = send file, clipboard = push clipboard) with tooltips, so they fit the row; Ping, Find My Phone, and Unpair stay in the ⋯ menu.

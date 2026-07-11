@@ -523,13 +523,15 @@ struct DeviceRow: View {
     }
 
     private func presentFilePicker() {
-        // Hop off the SwiftUI button-action stack so the popover can
-        // finish its own dismissal animation BEFORE the picker comes
-        // up. Without this, the picker on the second invocation often
-        // opens with disabled controls (the popover, mid-animation,
-        // is still partially the key window — clicks in the picker get
-        // routed nowhere).
-        DispatchQueue.main.async {
+        // Close the popover (and its global mouse-down dismiss monitor)
+        // BEFORE presenting: the `.transient` popover competes with the
+        // panel for key-window status, which is how the picker used to
+        // come up with dead controls and force several attempts.
+        (NSApp.delegate as? AppDelegate)?.closePopover()
+        // Hop off the SwiftUI button-action stack so the popover
+        // teardown completes before the modal session takes over the
+        // run loop.
+        DispatchQueue.main.async { [device] in
             let panel = NSOpenPanel()
             panel.canChooseFiles = true
             panel.canChooseDirectories = false
@@ -538,16 +540,19 @@ struct DeviceRow: View {
             panel.treatsFilePackagesAsDirectories = false
             panel.title = "Send file to \(device.name)"
             panel.prompt = "Send"
-            // Accessory apps (LSUIElement) must explicitly activate
-            // before presenting a modal panel, otherwise the panel can
-            // open without a key window and its controls render
-            // disabled.
+            // An accessory app (LSUIElement) has no real foreground
+            // presence, so a panel presented with begin() can open
+            // without ever becoming key and its controls render
+            // disabled. Become a regular app for the duration (the
+            // welcome window does the same dance), activate, and run
+            // the panel modally — runModal() guarantees key status
+            // where begin() does not.
+            NSApp.setActivationPolicy(.regular)
             NSApp.activate(ignoringOtherApps: true)
-            panel.begin { [device] result in
-                guard result == .OK, let url = panel.url else { return }
-                Task { @MainActor in
-                    SharePlugin.sendFile(url, to: device)
-                }
+            defer { NSApp.setActivationPolicy(.accessory) }
+            guard panel.runModal() == .OK, let url = panel.url else { return }
+            Task { @MainActor in
+                SharePlugin.sendFile(url, to: device)
             }
         }
     }
