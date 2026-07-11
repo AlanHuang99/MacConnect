@@ -6,6 +6,10 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+### Changed
+
+- Push Clipboard is now a one-click button on each device row, next to Send. Both are compact icon buttons (paperclip = send file, clipboard = push clipboard) with tooltips, so they fit the row; Ping, Find My Phone, and Unpair stay in the ⋯ menu.
+
 ## [0.3.7] - 2026-06-14
 
 ### Fixed

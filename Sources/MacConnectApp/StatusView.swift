@@ -243,8 +243,21 @@ struct DeviceRow: View {
     private var trailingControls: some View {
         if device.isPaired, device.isReachable, !device.pinMismatch, !device.incomingPairRequest {
             HStack(spacing: 4) {
-                Button("Send") { presentFilePicker() }
-                    .controlSize(.small)
+                // Icon buttons instead of text: the row is 360 px wide and
+                // two labelled buttons + the overflow would clip on long
+                // device names. Tooltips carry the labels.
+                Button { presentFilePicker() } label: {
+                    Image(systemName: "paperclip")
+                }
+                .controlSize(.small)
+                .help("Send file")
+                .accessibilityLabel("Send file")
+                Button { ClipboardPlugin.pushClipboard(to: device) } label: {
+                    Image(systemName: "doc.on.clipboard")
+                }
+                .controlSize(.small)
+                .help("Push clipboard")
+                .accessibilityLabel("Push clipboard")
                 pairedOverflowMenu
             }
         } else {
@@ -257,7 +270,6 @@ struct DeviceRow: View {
     private var pairedOverflowMenu: some View {
         Menu {
             Button("Ping") { PingPlugin.send(to: device) }
-            Button("Push Clipboard") { ClipboardPlugin.pushClipboard(to: device) }
             Button("Find My Phone") { FindMyPhonePlugin.ring(device) }
             Divider()
             Button("Unpair", role: .destructive) { DeviceManager.shared.unpair(device) }
