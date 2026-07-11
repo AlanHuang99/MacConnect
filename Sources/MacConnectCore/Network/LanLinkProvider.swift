@@ -86,6 +86,18 @@ public final class LanLinkProvider: @unchecked Sendable {
     /// peers don't accumulate.
     private static let announcementMaxAge: TimeInterval = 600
 
+    /// Test seam: when non-nil, replaces `NetworkInterfaces.localIPv4Addresses()`
+    /// in the self-traffic rejection checks. The in-process regression
+    /// harness (LanLinkHarnessTests) drives a real provider against a fake
+    /// peer over loopback, which the production check would reject as our
+    /// own traffic. Set it before any traffic flows; production leaves it
+    /// nil.
+    var localAddressesOverride: Set<String>?
+
+    private func localAddresses() -> Set<String> {
+        localAddressesOverride ?? NetworkInterfaces.localIPv4Addresses()
+    }
+
     /// Debounce window for `restartDiscovery()`. A wake bounces interfaces
     /// several times over a second or two; coalesce those into one rebuild.
     public static let restartDebounceInterval: TimeInterval = 1.5
@@ -430,7 +442,7 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     private func isLocalAddress(_ remote: SocketAddress) -> Bool {
         guard let host = Self.hostString(from: remote) else { return false }
-        return NetworkInterfaces.localIPv4Addresses().contains(host)
+        return localAddresses().contains(host)
     }
 
     /// Look up the peer's IP for an active link, used for opening payload
@@ -762,7 +774,10 @@ public final class LanLinkProvider: @unchecked Sendable {
         connection.start(queue: queue)
     }
 
-    private func handleUDPIdentity(_ data: Data, from endpoint: NWEndpoint) {
+    /// Internal (not private) and with an injectable `now` so the in-process
+    /// regression harness can feed synthetic announcements and control the
+    /// freshness clock; production callers use the defaults.
+    func handleUDPIdentity(_ data: Data, from endpoint: NWEndpoint, now: Date = Date()) {
         let payload = data.last == 0x0A ? data.dropLast() : data
         guard let packet = try? NetworkPacket.parse(payload),
               let identity = IdentityPayload.from(packet: packet) else { return }
@@ -783,13 +798,12 @@ public final class LanLinkProvider: @unchecked Sendable {
         // machine has a different deviceId from ours but reaches us as a
         // loopback peer; without this, MacConnect would list its host as a
         // remote device.
-        if NetworkInterfaces.localIPv4Addresses().contains(hostStr) {
+        if localAddresses().contains(hostStr) {
             Log.net.debug("Ignoring UDP identity from local address \(hostStr, privacy: .public)")
             return
         }
         Log.net.debug("UDP identity from \(identity.deviceName, privacy: .public)")
 
-        let now = Date()
         recordAnnouncement(identity: identity, host: hostStr, port: UInt16(port), now: now)
 
         // Avoid double-connecting if we already have a secured link —

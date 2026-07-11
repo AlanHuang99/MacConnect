@@ -4,7 +4,7 @@
 
 - macOS Share Extension proper (`.appex` bundle) so MacConnect appears in the modern Share sheet alongside Mail / Messages — not just in Finder's Services menu. Needs an app-extension build path that SwiftPM doesn't natively support; the existing Services-menu integration is the working substitute in the meantime.
 - Live-update the Bonjour service name when the user renames the device (currently set once at listener creation).
-- Two-provider in-process pairing smoke test as a regression gate. Requires injecting `Settings` / `CertificateService` / `PluginRegistry` / `DeviceManager` into `LanLinkProvider` (singletons today). Partial coverage from the `ChannelHandlerTests` EmbeddedChannel tests and the `PeerVerifierTests` cert-store round-trip.
+- Two-provider in-process pairing smoke test as a regression gate. Requires injecting `Settings` / `CertificateService` / `PluginRegistry` / `DeviceManager` into `LanLinkProvider` (singletons today). Substantial coverage now comes from `LanLinkHarnessTests` (a real provider dialing a scripted fake peer over loopback TCP + TLS: announcement → dial → secure → silent-vanish recovery), plus the `ChannelHandlerTests` EmbeddedChannel tests and the `PeerVerifierTests` cert-store round-trip; the full DI refactor would still be needed to exercise two complete providers against each other (both listeners, UDP, pairing packets).
 
 ## Medium term
 
