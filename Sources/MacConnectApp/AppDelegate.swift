@@ -179,10 +179,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
     private func setupStatusItem() {
         statusItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusItem.button {
-            button.image = NSImage(
-                systemSymbolName: "iphone.radiowaves.left.and.right",
-                accessibilityDescription: "MacConnect"
-            )
+            button.image = Self.statusItemIcon()
             button.action = #selector(togglePopover)
             button.target = self
         }
@@ -191,6 +188,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, UNUserNotificationCent
         popover.contentSize = NSSize(width: 360, height: 500)
         popover.contentViewController = NSHostingController(rootView: StatusView())
         observeTransferToasts()
+    }
+
+    /// The real app icon, sized for the menu bar, so the status item
+    /// matches the Dock / Finder branding — the previous SF Symbol looked
+    /// like a different app next to the actual icon. Colored on purpose
+    /// (not a template): the icon is a solid blue tile whose glyph reads
+    /// fine at 18 pt in both light and dark menu bars, and templating a
+    /// filled tile would render it as a featureless square. Copy before
+    /// resizing — `applicationIconImage` is a shared instance and resizing
+    /// it in place would shrink the icon everywhere else it appears.
+    private static func statusItemIcon() -> NSImage? {
+        guard let icon = NSApp.applicationIconImage.copy() as? NSImage else {
+            // Fallback (e.g. running the bare executable without a bundle):
+            // the old symbol beats an empty status item.
+            return NSImage(
+                systemSymbolName: "iphone.radiowaves.left.and.right",
+                accessibilityDescription: "MacConnect"
+            )
+        }
+        icon.size = NSSize(width: 18, height: 18)
+        icon.accessibilityDescription = "MacConnect"
+        return icon
     }
 
     /// When SharePlugin publishes a Toast (via TransferStore), flash the
