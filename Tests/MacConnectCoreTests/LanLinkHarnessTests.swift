@@ -201,6 +201,40 @@ final class LanLinkHarnessTests: XCTestCase {
             "the redial goes to the announced (new) host, not back to the old one"
         )
     }
+
+    /// Codex review case on #28: a peer that keeps announcing but refuses
+    /// TCP (its app listener died; the suspect link lives on) must not be
+    /// re-dialed every reconcile tick with no backoff. The failed re-dial
+    /// arms the dial cooldown — recordDialFailure alone can't, because its
+    /// stale-failure guard sees the still-"secure" old link and skips the
+    /// bump — and the next reconcile pass inside the backoff window stays
+    /// quiet. The device meanwhile stays reachable on its old link.
+    @MainActor
+    func testFailedRedialArmsCooldown() async throws {
+        try await establishLink()
+        fakePeer.stopAccepting()
+
+        let shifted = Date().addingTimeInterval(DeviceManager.unprobeableLivenessTTL + 1)
+        try announce(now: shifted)
+        DeviceManager.shared.reconcile(now: shifted)
+
+        try await waitUntil("failed re-dial to arm the cooldown") {
+            self.provider.dialFailureCount(deviceId: self.peerId) >= 1
+        }
+        let armed = provider.dialFailureCount(deviceId: peerId)
+
+        // Within the backoff window another reconcile pass must not dial
+        // (and therefore must not bump the failure count again).
+        try announce(now: shifted.addingTimeInterval(1))
+        DeviceManager.shared.reconcile(now: shifted.addingTimeInterval(1))
+        try await Task.sleep(nanoseconds: 300_000_000)
+        XCTAssertEqual(
+            provider.dialFailureCount(deviceId: peerId), armed,
+            "a reconcile pass inside the backoff window must not re-dial"
+        )
+        XCTAssertEqual(fakePeer.connectionsAccepted, 1)
+        XCTAssertEqual(device()?.isReachable, true, "the old link stays up while re-dials back off")
+    }
 }
 
 // MARK: - Fake peer
@@ -286,6 +320,13 @@ private final class FakeKDEConnectPeer: @unchecked Sendable {
         }
         serverChannel = bound
         port = UInt16(boundPort)
+    }
+
+    /// Close only the listener, keeping already-accepted connections (and
+    /// the event loop) alive — the shape of a peer whose app-level listener
+    /// died while its old TCP link and its announcements live on.
+    func stopAccepting() {
+        try? serverChannel.close().wait()
     }
 
     func shutdown() {

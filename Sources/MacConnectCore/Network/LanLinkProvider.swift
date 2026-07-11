@@ -939,16 +939,35 @@ public final class LanLinkProvider: @unchecked Sendable {
             self.linkLock.lock()
             let announcement = self.announcements[deviceId]
             let canDial = self.dialCooldown.canDial(deviceId: deviceId)
+            let fresh = announcement
+                .map { Date().timeIntervalSince($0.at) <= Self.announceQuietThreshold } ?? false
+            if canDial, fresh {
+                // Arm the cooldown BEFORE dialing. The suspect link stays in
+                // the maps (that is the point of a re-dial-in-place), so a
+                // failed dial reaches recordDialFailure's stale-failure
+                // guard — which sees a "secure" link and skips the bump.
+                // Without this pre-arm the reconciler would retry every
+                // tick with no backoff for as long as the peer announces
+                // but refuses TCP. handleSecured clears the cooldown on
+                // success, so a healthy re-dial pays nothing.
+                self.dialCooldown.recordFailure(deviceId: deviceId)
+            }
             self.linkLock.unlock()
-            guard let announcement, canDial,
-                  Date().timeIntervalSince(announcement.at) <= Self.announceQuietThreshold
-            else { return }
+            guard let announcement, canDial, fresh else { return }
             self.dialOnQueue(
                 identity: announcement.identity,
                 host: announcement.host,
                 port: announcement.port
             )
         }
+    }
+
+    /// Test seam: current dial-failure count for a peer, so the harness can
+    /// assert that a failed quiet-link re-dial armed the backoff.
+    func dialFailureCount(deviceId: String) -> Int {
+        linkLock.lock()
+        defer { linkLock.unlock() }
+        return dialCooldown.failureCount(deviceId: deviceId)
     }
 
     /// Bump the per-peer dial-failure counter and push out the next
