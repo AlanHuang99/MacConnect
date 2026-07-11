@@ -10,54 +10,85 @@ import XCTest
 final class LivenessReconcileTests: XCTestCase {
     private let ttl: TimeInterval = 60
     private let quiet: TimeInterval = 15
+    private let hardTTL: TimeInterval = 120
     private let maxAge: TimeInterval = 180
 
-    func testRecentlyHeardFromIsKept() {
-        XCTAssertEqual(
-            DeviceManager.livenessAction(age: 5, probeable: true, ttl: ttl, quiet: quiet),
-            .keep
+    /// `announcing` defaults to `.some(false)` — "was announcing, went
+    /// quiet" — the state a silently vanished peer is actually in. Pass
+    /// `nil` for a peer whose announcements were never received at all.
+    private func action(
+        age: TimeInterval, probeable: Bool, announcing: Bool? = false
+    ) -> DeviceManager.LivenessAction {
+        DeviceManager.livenessAction(
+            age: age, probeable: probeable, peerAnnouncing: announcing,
+            ttl: ttl, quiet: quiet, hardTTL: hardTTL
         )
+    }
+
+    func testRecentlyHeardFromIsKept() {
+        XCTAssertEqual(action(age: 5, probeable: true), .keep)
     }
 
     func testQuietLinkIsProbed() {
-        XCTAssertEqual(
-            DeviceManager.livenessAction(age: 20, probeable: true, ttl: ttl, quiet: quiet),
-            .probe
-        )
+        XCTAssertEqual(action(age: 20, probeable: true), .probe)
     }
 
     func testSilentPastTTLIsDropped() {
-        XCTAssertEqual(
-            DeviceManager.livenessAction(age: 75, probeable: true, ttl: ttl, quiet: quiet),
-            .drop
-        )
-    }
-
-    /// Without a probe we can't distinguish a dead link from a genuinely idle
-    /// one, so silence alone must never drop the peer — defer to the
-    /// link-level mechanisms instead (no regression for un-probeable peers).
-    func testUnprobeablePeerIsNeverDroppedOnSilence() {
-        XCTAssertEqual(
-            DeviceManager.livenessAction(age: 75, probeable: false, ttl: ttl, quiet: quiet),
-            .keep
-        )
-        XCTAssertEqual(
-            DeviceManager.livenessAction(age: 20, probeable: false, ttl: ttl, quiet: quiet),
-            .keep
-        )
+        XCTAssertEqual(action(age: 75, probeable: true), .drop)
     }
 
     /// The TTL boundary: exactly at the TTL we still only probe; just past it
     /// we drop. Guards against an off-by-one that would drop live links early.
     func testTTLBoundary() {
-        XCTAssertEqual(
-            DeviceManager.livenessAction(age: ttl, probeable: true, ttl: ttl, quiet: quiet),
-            .probe
-        )
-        XCTAssertEqual(
-            DeviceManager.livenessAction(age: ttl + 0.01, probeable: true, ttl: ttl, quiet: quiet),
-            .drop
-        )
+        XCTAssertEqual(action(age: ttl, probeable: true), .probe)
+        XCTAssertEqual(action(age: ttl + 0.01, probeable: true), .drop)
+    }
+
+    /// Below the hard ceiling an un-probeable peer is left alone however the
+    /// announcements look: with no probe, ordinary idleness is
+    /// indistinguishable from death, and flapping idle links is worse.
+    func testUnprobeablePeerKeptUnderHardTTL() {
+        XCTAssertEqual(action(age: 75, probeable: false, announcing: true), .keep)
+        XCTAssertEqual(action(age: 75, probeable: false, announcing: false), .keep)
+        XCTAssertEqual(action(age: hardTTL, probeable: false, announcing: false), .keep)
+    }
+
+    /// THE Mac↔Mac regression (0.3.6–0.3.7): an un-probeable peer that also
+    /// stopped announcing used to be kept forever, so after a silent vanish
+    /// both Macs held mutually stale links and neither ever re-dialed. Past
+    /// the hard ceiling it must now be dropped so it shows offline and
+    /// reconnects on its next announcement.
+    func testUnprobeableSilentPeerIsDroppedPastHardTTL() {
+        XCTAssertEqual(action(age: hardTTL + 0.01, probeable: false, announcing: false), .drop)
+        XCTAssertEqual(action(age: 3600, probeable: false, announcing: false), .drop)
+    }
+
+    /// An un-probeable peer that is TCP-silent past the ceiling but still
+    /// announcing over UDP is alive with a suspect link — replace the link in
+    /// place rather than flapping the device offline. Healthy idle Mac pairs
+    /// exchange no TCP at all, so they land here routinely and must not show
+    /// offline blips.
+    func testUnprobeableAnnouncingPeerIsRedialedPastHardTTL() {
+        XCTAssertEqual(action(age: hardTTL + 0.01, probeable: false, announcing: true), .redial)
+        XCTAssertEqual(action(age: 3600, probeable: false, announcing: true), .redial)
+    }
+
+    /// Announcements only matter for un-probeable peers: a probeable peer past
+    /// its TTL ignored our probe, which is already the death signal —
+    /// broadcast reachability must not override it.
+    func testAnnouncingDoesNotRescueProbeablePeerPastTTL() {
+        XCTAssertEqual(action(age: 75, probeable: true, announcing: true), .drop)
+    }
+
+    /// The Codex review case on #28: no announcement ever received is
+    /// unknown, not dead. A peer that connected inbound while its UDP
+    /// doesn't reach us (broadcast-filtered network) must not be dropped on
+    /// TCP silence alone — that would flap a possibly-healthy link with no
+    /// discovery signal to reconnect it. It stays kept, deferred to the
+    /// transport-level read-idle close, exactly as before the hard TTL.
+    func testUnprobeablePeerWithNoAnnouncementHistoryIsKept() {
+        XCTAssertEqual(action(age: hardTTL + 0.01, probeable: false, announcing: nil), .keep)
+        XCTAssertEqual(action(age: 3600, probeable: false, announcing: nil), .keep)
     }
 
     func testEvictsStaleOfflineUnpairedGhost() {
@@ -90,11 +121,33 @@ final class LivenessReconcileTests: XCTestCase {
     /// The Codex review case: a paired but limited client that advertises
     /// neither battery nor mpris must yield no probes — otherwise we'd probe it
     /// with packets it ignores and `.drop` it every TTL. No probes -> not
-    /// probeable -> `livenessAction` keeps it (deferring to link-level checks).
+    /// probeable -> `livenessAction` defers to the hard-TTL/announcement path.
     func testLimitedClientWithoutBatteryOrMprisHasNoProbes() {
         let probes = DeviceManager.supportedProbes(
             batteryEnabled: true, mprisEnabled: true,
             peerIncoming: [], peerOutgoing: []
+        )
+        XCTAssertTrue(probes.isEmpty)
+    }
+
+    /// Two MacConnects advertise battery and mpris as receivers on BOTH
+    /// ends (`incoming = [battery]`, `outgoing = [battery.request]`, same
+    /// shape for mpris), so from either side the peer neither accepts a
+    /// `*.request` nor produces the state packet — no silent probe exists.
+    /// This is what made Mac↔Mac pairs invisible to the 0.3.6 reconciler
+    /// and is why `livenessAction` needs the hard-TTL/announcement path at
+    /// all. Uses the real capability sets from BatteryPlugin / MprisPlugin /
+    /// PingPlugin so a future capability change re-evaluates this test.
+    func testMacConnectSymmetricPeerHasNoProbes() {
+        let probes = DeviceManager.supportedProbes(
+            batteryEnabled: true, mprisEnabled: true,
+            peerIncoming: [
+                PacketType.battery, PacketType.mpris, PacketType.ping, PacketType.clipboard
+            ],
+            peerOutgoing: [
+                PacketType.batteryRequest, PacketType.mprisRequest, PacketType.ping,
+                PacketType.clipboard
+            ]
         )
         XCTAssertTrue(probes.isEmpty)
     }

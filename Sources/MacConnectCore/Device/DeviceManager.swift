@@ -176,6 +176,19 @@ public final class DeviceManager: ObservableObject {
     /// (battery / mpris request — answered by the peer but never surfaced as a
     /// notification). Chatty links stay above this threshold on their own.
     public static let probeQuietThreshold: TimeInterval = 15
+    /// Hard ceiling of TCP silence for a peer we cannot probe — notably
+    /// another MacConnect, whose battery/mpris capabilities are
+    /// receiver-only on both sides, so neither Mac has a silent probe the
+    /// other will answer. Past this ceiling the peer's own UDP identity
+    /// announcements decide: still announcing → re-dial the suspect link
+    /// in place; gone quiet too → drop it (see `livenessAction`). Longer
+    /// than `livenessTTL` because with no probe to solicit a reply,
+    /// ordinary idleness must not look like death too eagerly. Two idle
+    /// MacConnects exchange no TCP at all in steady state, so this WILL
+    /// fire periodically for healthy links — which is why the announcing
+    /// branch replaces the channel instead of flapping the device
+    /// offline.
+    public static let unprobeableLivenessTTL: TimeInterval = 120
     /// An unpaired, offline discovery ghost older than this is dropped from the
     /// list. Paired peers are always kept so "last seen" stays visible.
     public static let unpairedEvictionAge: TimeInterval = 180
@@ -229,14 +242,32 @@ public final class DeviceManager: ObservableObject {
                 peerIncoming: Set(device.incomingCapabilities),
                 peerOutgoing: Set(device.outgoingCapabilities)
             )
+            // For un-probeable peers the peer's own UDP announcements are
+            // the liveness signal (a MacConnect announces every 5 s for
+            // its whole life). `nil` = no announcement ever received (the
+            // peer connected inbound and its UDP doesn't reach us) — a
+            // distinct state from "was announcing and stopped". Freshness
+            // is judged against the reconciler's injectable `now` so the
+            // decision stays testable.
+            let announcing: Bool? = probes.isEmpty
+                ? LanLinkProvider.shared.lastAnnounce(deviceId: device.id)
+                .map { now.timeIntervalSince($0) <= LanLinkProvider.announceQuietThreshold }
+                : nil
             switch Self.livenessAction(
-                age: age, probeable: !probes.isEmpty,
-                ttl: Self.livenessTTL, quiet: Self.probeQuietThreshold
+                age: age, probeable: !probes.isEmpty, peerAnnouncing: announcing,
+                ttl: Self.livenessTTL, quiet: Self.probeQuietThreshold,
+                hardTTL: Self.unprobeableLivenessTTL
             ) {
             case .keep:
                 break
             case .probe:
                 sendLivenessProbe(probes, to: device)
+            case .redial:
+                Log.net
+                    .notice(
+                        "Link to \(device.id, privacy: .public) silent \(Int(age), privacy: .public)s but peer still announcing; re-dialing"
+                    )
+                LanLinkProvider.shared.redialQuietLink(deviceId: device.id)
             case .drop:
                 Log.net
                     .notice(
@@ -282,19 +313,49 @@ public final class DeviceManager: ObservableObject {
     enum LivenessAction: Equatable {
         case keep
         case probe
+        case redial
         case drop
     }
 
     /// Pure liveness decision for a reachable, paired peer — no timers, links,
-    /// or singletons — so it's unit-testable. A peer we cannot probe (all probe
-    /// plugins disabled) is never dropped on silence alone: we can't tell dead
-    /// from idle, so we defer to the link-level mechanisms (no regression).
+    /// or singletons — so it's unit-testable.
+    ///
+    /// Probeable peers keep the 0.3.6 behaviour: probe past `quiet`, drop
+    /// past `ttl` (an unanswered probe is the death signal).
+    ///
+    /// Un-probeable peers used to return `.keep` forever — the Mac↔Mac
+    /// hole: two MacConnects advertise battery/mpris as receivers on both
+    /// ends, so neither can probe the other, and after a silent vanish
+    /// both sides kept mutually stale links that blocked every re-dial.
+    /// Now the peer's own discovery announcements substitute for a probe
+    /// past the `hardTTL` ceiling: still announcing (`true`) → the peer is
+    /// alive but the link is suspect, so re-dial and replace it in place
+    /// (no offline flap; healthy idle Mac pairs land here every ~2 minutes
+    /// since they exchange no TCP at rest); was announcing and stopped
+    /// (`false`) → the peer really left, drop so it shows offline and
+    /// reconnects on its next announcement.
+    ///
+    /// `peerAnnouncing == nil` means no announcement was ever received —
+    /// a peer that connected inbound while its UDP doesn't reach us
+    /// (broadcast-filtered network). That is unknown, not dead: keep the
+    /// link and defer to the transport-level read-idle close, exactly the
+    /// pre-hard-TTL behaviour for that class of peer. Only a peer whose
+    /// announcements were once heard and then stopped is treated as gone.
     nonisolated static func livenessAction(
-        age: TimeInterval, probeable: Bool, ttl: TimeInterval, quiet: TimeInterval
+        age: TimeInterval, probeable: Bool, peerAnnouncing: Bool?,
+        ttl: TimeInterval, quiet: TimeInterval, hardTTL: TimeInterval
     ) -> LivenessAction {
-        if age > ttl { return probeable ? .drop : .keep }
-        if probeable, age > quiet { return .probe }
-        return .keep
+        if probeable {
+            if age > ttl { return .drop }
+            if age > quiet { return .probe }
+            return .keep
+        }
+        guard age > hardTTL else { return .keep }
+        switch peerAnnouncing {
+        case .some(true): return .redial
+        case .some(false): return .drop
+        case .none: return .keep
+        }
     }
 
     /// Pure eviction predicate: only unpaired peers that are already offline
@@ -303,6 +364,17 @@ public final class DeviceManager: ObservableObject {
         isPaired: Bool, isReachable: Bool, age: TimeInterval, maxAge: TimeInterval
     ) -> Bool {
         !isPaired && !isReachable && age > maxAge
+    }
+
+    /// Test seam: remove one device outright. The loopback harness's
+    /// teardown uses this so cleanup stays scoped to the device the test
+    /// created, instead of driving a future-dated global `reconcile` whose
+    /// eviction pass would touch every device in the shared manager.
+    func removeDevice(id: String) {
+        devices.removeValue(forKey: id)
+        BatteryStore.shared.clear(deviceId: id)
+        MprisStore.shared.clear(deviceId: id)
+        objectWillChange.send()
     }
 
     enum ProbeKind: Hashable {
