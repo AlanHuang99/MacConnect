@@ -51,6 +51,41 @@ public final class LanLinkProvider: @unchecked Sendable {
     /// on `queue`.
     private var didStart = false
 
+    /// Incarnation counter for the UDP listener. Every (re)build and
+    /// teardown advances it, so a delayed rebind retry scheduled by an
+    /// earlier listener no-ops instead of double-binding against the
+    /// current one. Touched only on `queue`.
+    private var udpGeneration = 0
+    /// Consecutive failed bind attempts for the current UDP listener
+    /// incarnation; indexes the rebind backoff. Touched only on `queue`.
+    private var udpRebindAttempts = 0
+
+    /// Latest identity announcement per device, with per-host timestamps.
+    /// Written by `handleUDPIdentity` for every validated announcement,
+    /// whether or not it leads to a dial. Read by the liveness reconciler
+    /// (is the peer still announcing? where do we re-dial it?) and by the
+    /// stale-host check (did the address our link points at stop
+    /// announcing, or is the peer just multi-homed?). Guarded by
+    /// `linkLock`: written on `queue`, read from the main actor.
+    private struct Announcement {
+        var identity: IdentityPayload
+        var host: String
+        var port: UInt16
+        var at: Date
+        var hostsLastSeen: [String: Date]
+    }
+
+    private var announcements: [String: Announcement] = [:]
+
+    /// A peer (or one of its addresses) whose last announcement is older
+    /// than this has stopped announcing. Six missed 5 s broadcast ticks —
+    /// generous enough that ordinary UDP loss doesn't look like departure.
+    public static let announceQuietThreshold: TimeInterval = 30
+
+    /// Announcements older than this are pruned entirely so departed
+    /// peers don't accumulate.
+    private static let announcementMaxAge: TimeInterval = 600
+
     /// Debounce window for `restartDiscovery()`. A wake bounces interfaces
     /// several times over a second or two; coalesce those into one rebuild.
     public static let restartDebounceInterval: TimeInterval = 1.5
@@ -103,9 +138,10 @@ public final class LanLinkProvider: @unchecked Sendable {
         do {
             try startUDPListener()
         } catch {
-            // Non-fatal: broadcast + mDNS still find peers. A UDP-listener
-            // rebind failure after wake must not leave discovery dead.
+            // Non-fatal: broadcast + mDNS still find peers, and the
+            // scheduled rebind below keeps trying until the port frees.
             Log.net.error("UDP listener bind failed: \(error.localizedDescription, privacy: .public)")
+            scheduleUDPRebind(generation: udpGeneration)
         }
         startMDNSBrowser()
         openBroadcastSocketOnQueue()
@@ -118,6 +154,12 @@ public final class LanLinkProvider: @unchecked Sendable {
     private func teardownDiscoveryOnQueue() {
         broadcastTimer?.cancel()
         broadcastTimer = nil
+        // Advance the generation and detach the state handler BEFORE
+        // cancelling: a dying listener can emit one last `.failed`, and
+        // without these it would schedule a rebind against the fresh
+        // listener the caller is about to build.
+        udpGeneration += 1
+        udpListener?.stateUpdateHandler = nil
         udpListener?.cancel()
         udpListener = nil
         mdnsBrowser?.cancel()
@@ -206,6 +248,7 @@ public final class LanLinkProvider: @unchecked Sendable {
         linksByDeviceId.removeAll()
         channelToDeviceId.removeAll()
         dialCooldown.removeAll()
+        announcements.removeAll()
         linkLock.unlock()
         // Drop the shared link reference so links don't outlive the provider.
         for link in stragglers {
@@ -289,18 +332,27 @@ public final class LanLinkProvider: @unchecked Sendable {
     /// a no-op if the link is already gone.
     public func dropLink(deviceId: String) {
         queue.async { [weak self] in
-            guard let self else { return }
-            self.linkLock.lock()
-            let link = self.linksByDeviceId.removeValue(forKey: deviceId)
-            if let link {
-                self.channelToDeviceId.removeValue(forKey: ObjectIdentifier(link.activeChannel))
-            }
-            self.dialCooldown.clear(deviceId: deviceId)
-            self.linkLock.unlock()
-            guard let link else { return }
-            link.disconnect()
-            link.notifyClosed()
+            self?.dropLinkOnQueue(deviceId: deviceId)
         }
+    }
+
+    /// Body of `dropLink` for callers already on `queue` that need the
+    /// drop completed synchronously before they re-dial (the stale-host
+    /// path in `handleUDPIdentity`). Same lock discipline as everywhere
+    /// else: snapshot and remove under `linkLock`, then disconnect and
+    /// notify OUTSIDE it — `Channel.close()` can synchronously re-enter
+    /// `handleClosed` → `linkLock` (the 0.3.7 deadlock).
+    private func dropLinkOnQueue(deviceId: String) {
+        linkLock.lock()
+        let link = linksByDeviceId.removeValue(forKey: deviceId)
+        if let link {
+            channelToDeviceId.removeValue(forKey: ObjectIdentifier(link.activeChannel))
+        }
+        dialCooldown.clear(deviceId: deviceId)
+        linkLock.unlock()
+        guard let link else { return }
+        link.disconnect()
+        link.notifyClosed()
     }
 
     // MARK: - Network path monitoring
@@ -358,22 +410,26 @@ public final class LanLinkProvider: @unchecked Sendable {
         return isSatisfied
     }
 
-    private func isLocalAddress(_ remote: SocketAddress) -> Bool {
-        let host: String
+    /// Numeric host string for a socket address (`nil` for unix sockets).
+    static func hostString(from remote: SocketAddress?) -> String? {
         switch remote {
         case .v4(let v4):
             var addr = v4.address.sin_addr
             var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
             inet_ntop(AF_INET, &addr, &buf, socklen_t(buf.count))
-            host = String(cString: buf)
+            return String(cString: buf)
         case .v6(let v6):
             var addr = v6.address.sin6_addr
             var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
             inet_ntop(AF_INET6, &addr, &buf, socklen_t(buf.count))
-            host = String(cString: buf)
-        case .unixDomainSocket:
-            return false
+            return String(cString: buf)
+        case .unixDomainSocket, nil:
+            return nil
         }
+    }
+
+    private func isLocalAddress(_ remote: SocketAddress) -> Bool {
+        guard let host = Self.hostString(from: remote) else { return false }
         return NetworkInterfaces.localIPv4Addresses().contains(host)
     }
 
@@ -383,21 +439,7 @@ public final class LanLinkProvider: @unchecked Sendable {
         linkLock.lock()
         let link = linksByDeviceId[deviceId]
         linkLock.unlock()
-        guard let remote = link?.activeChannel.remoteAddress else { return nil }
-        switch remote {
-        case .v4(let v4):
-            var addr = v4.address.sin_addr
-            var buf = [CChar](repeating: 0, count: Int(INET_ADDRSTRLEN))
-            inet_ntop(AF_INET, &addr, &buf, socklen_t(buf.count))
-            return String(cString: buf)
-        case .v6(let v6):
-            var addr = v6.address.sin6_addr
-            var buf = [CChar](repeating: 0, count: Int(INET6_ADDRSTRLEN))
-            inet_ntop(AF_INET6, &addr, &buf, socklen_t(buf.count))
-            return String(cString: buf)
-        case .unixDomainSocket:
-            return nil
-        }
+        return Self.hostString(from: link?.activeChannel.remoteAddress)
     }
 
     private func startBroadcastTimer() {
@@ -571,6 +613,8 @@ public final class LanLinkProvider: @unchecked Sendable {
     // MARK: - UDP discovery
 
     private func startUDPListener() throws {
+        udpGeneration += 1
+        let generation = udpGeneration
         let params = NWParameters.udp
         params.allowLocalEndpointReuse = true
         let port = NWEndpoint.Port(rawValue: Settings.udpPort)!
@@ -593,9 +637,22 @@ public final class LanLinkProvider: @unchecked Sendable {
                 incoming.cancel()
             }
         }
-        listener.stateUpdateHandler = { state in
-            if case .failed(let err) = state {
+        listener.stateUpdateHandler = { [weak self] state in
+            switch state {
+            case .ready:
+                self?.udpRebindAttempts = 0
+            case .failed(let err):
+                // Not just log-and-die: a rebuild's fresh listener races
+                // the dying one for the port because NWListener.cancel()
+                // unbinds asynchronously, and losing that race
+                // (EADDRINUSE) used to leave UDP discovery receive dead
+                // until the next rebuild — peers kept announcing while we
+                // were deaf, the exact "two Macs can't find each other
+                // until I hit refresh" state. Retry until the port frees.
                 Log.net.error("UDP listener failed: \(err.localizedDescription, privacy: .public)")
+                self?.scheduleUDPRebind(generation: generation)
+            default:
+                break
             }
         }
         listener.start(queue: queue)
@@ -604,6 +661,47 @@ public final class LanLinkProvider: @unchecked Sendable {
             .info(
                 "UDP listener on \(Settings.udpPort, privacy: .public) (also advertising \(Self.bonjourServiceType, privacy: .public))"
             )
+    }
+
+    /// Delay before the next UDP rebind attempt. The first retry is fast
+    /// because the common failure is transient: the just-cancelled
+    /// listener releases the port within ~100 ms. Later attempts back
+    /// off in case something else owns the port (another KDE Connect
+    /// client on this Mac), capping so a permanently occupied port
+    /// produces bounded log noise while still self-healing the moment
+    /// it frees.
+    static func udpRebindDelay(attempt: Int) -> TimeInterval {
+        let schedule: [TimeInterval] = [0.5, 1, 2, 5, 10]
+        guard attempt >= 1 else { return schedule[0] }
+        return attempt <= schedule.count ? schedule[attempt - 1] : 30
+    }
+
+    /// Schedule a UDP listener rebind after a bind failure. `generation`
+    /// pins the incarnation the failure belongs to — teardown, rebuild,
+    /// and stop all advance `udpGeneration`, so a stale retry no-ops
+    /// instead of binding a second listener behind the current one.
+    /// Runs on `queue`.
+    private func scheduleUDPRebind(generation: Int) {
+        udpRebindAttempts += 1
+        let delay = Self.udpRebindDelay(attempt: udpRebindAttempts)
+        Log.net
+            .notice(
+                "Scheduling UDP listener rebind attempt \(self.udpRebindAttempts, privacy: .public) in \(delay, privacy: .public)s"
+            )
+        queue.asyncAfter(deadline: .now() + delay) { [weak self] in
+            guard let self, self.didStart, generation == self.udpGeneration else { return }
+            // Drop the failed listener before rebinding; detach its state
+            // handler first so its cancellation can't re-enter here.
+            self.udpListener?.stateUpdateHandler = nil
+            self.udpListener?.cancel()
+            self.udpListener = nil
+            do {
+                try self.startUDPListener()
+            } catch {
+                Log.net.error("UDP listener rebind failed: \(error.localizedDescription, privacy: .public)")
+                self.scheduleUDPRebind(generation: self.udpGeneration)
+            }
+        }
     }
 
     // MARK: - mDNS browse
@@ -691,25 +789,78 @@ public final class LanLinkProvider: @unchecked Sendable {
         }
         Log.net.debug("UDP identity from \(identity.deviceName, privacy: .public)")
 
-        // Avoid double-connecting if we already have a secured link.
-        // Also honour the per-peer dial cooldown — without it a peer
-        // whose TLS handshake keeps failing gets redialed every 5 s
-        // for as long as it broadcasts.
+        let now = Date()
+        recordAnnouncement(identity: identity, host: hostStr, port: UInt16(port), now: now)
+
+        // Avoid double-connecting if we already have a secured link —
+        // unless the peer now announces from an address our link doesn't
+        // point at AND the link's own address has stopped announcing.
+        // That means the peer moved (new DHCP lease, band switch) and the
+        // link is stale; the old guard kept it until a timeout, so the
+        // returning peer stayed unreachable for minutes. A multi-homed
+        // peer keeps announcing from every interface, so its link's host
+        // stays fresh and it is never flapped here. Also honour the
+        // per-peer dial cooldown — without it a peer whose TLS handshake
+        // keeps failing gets redialed every 5 s for as long as it
+        // broadcasts.
         linkLock.lock()
         let existing = linksByDeviceId[identity.deviceId]
         let canDial = dialCooldown.canDial(deviceId: identity.deviceId)
+        let linkHost = Self.hostString(from: existing?.activeChannel.remoteAddress)
+        let linkHostLastSeen = linkHost.flatMap { announcements[identity.deviceId]?.hostsLastSeen[$0] }
         linkLock.unlock()
-        if let existing, existing.isSecure { return }
-        if !canDial { return }
+        if let existing, existing.isSecure {
+            guard Self.isLinkHostStale(
+                linkHost: linkHost, announcedHost: hostStr,
+                linkHostLastAnnounce: linkHostLastSeen, now: now,
+                quietAfter: Self.announceQuietThreshold
+            ) else { return }
+            Log.net
+                .notice(
+                    "\(identity.deviceName, privacy: .public) now announces from \(hostStr, privacy: .public) but the link points at \(linkHost ?? "?", privacy: .public), which went quiet; dropping stale link and re-dialing"
+                )
+            // Clears the dial cooldown too, so the dial below is allowed.
+            dropLinkOnQueue(deviceId: identity.deviceId)
+        } else if !canDial {
+            return
+        }
 
+        dialOnQueue(identity: identity, host: hostStr, port: UInt16(port))
+    }
+
+    /// Whether a secured link should be treated as stale because the peer
+    /// now announces from a different address. True only when the link's
+    /// own address has also stopped announcing (the peer moved). A
+    /// multi-homed peer announces from every interface, which keeps the
+    /// link's address fresh, so it is never flapped. Conservative on
+    /// missing data: if the link's address has never announced (e.g. the
+    /// peer connected inbound and its broadcasts don't reach us), the
+    /// link is left alone and the liveness reconciler stays the backstop.
+    static func isLinkHostStale(
+        linkHost: String?,
+        announcedHost: String,
+        linkHostLastAnnounce: Date?,
+        now: Date,
+        quietAfter: TimeInterval
+    ) -> Bool {
+        guard let linkHost, linkHost != announcedHost else { return false }
+        guard let linkHostLastAnnounce else { return false }
+        return now.timeIntervalSince(linkHostLastAnnounce) > quietAfter
+    }
+
+    /// Open a TCP connection to an announced peer and register the
+    /// resulting channel through the normal `handleIdentity` flow (which
+    /// replaces the channel on an existing link, or creates a new link).
+    /// Runs on `queue`.
+    private func dialOnQueue(identity: IdentityPayload, host: String, port: UInt16) {
         Log.net
             .info(
-                "Connecting to \(identity.deviceName, privacy: .public) at \(hostStr, privacy: .public):\(port, privacy: .public)"
+                "Connecting to \(identity.deviceName, privacy: .public) at \(host, privacy: .public):\(port, privacy: .public)"
             )
 
         let future = NIOTransport.shared.connect(
-            host: hostStr,
-            port: UInt16(port),
+            host: host,
+            port: port,
             peerIdentity: identity,
             onPacket: { [weak self] packet, channel in
                 self?.handlePacket(packet, channel: channel)
@@ -728,12 +879,61 @@ public final class LanLinkProvider: @unchecked Sendable {
         future.whenFailure { [weak self] err in
             Log.net
                 .error(
-                    "Outbound connect failed to \(hostStr, privacy: .public): \(err.localizedDescription, privacy: .public)"
+                    "Outbound connect failed to \(host, privacy: .public): \(err.localizedDescription, privacy: .public)"
                 )
             // TCP-level failure (host unreachable, refused) deserves the
             // same backoff as a pre-TLS close — without this, an
             // unreachable IPv6 link-local peer redials every 5 s.
             self?.recordDialFailure(deviceId: identity.deviceId)
+        }
+    }
+
+    /// Record a validated identity announcement: the latest address/port
+    /// to re-dial, plus per-host freshness for the multi-homed check.
+    /// Prunes long-departed peers and long-quiet hosts on the way.
+    private func recordAnnouncement(identity: IdentityPayload, host: String, port: UInt16, now: Date) {
+        linkLock.lock()
+        defer { linkLock.unlock() }
+        var hosts = announcements[identity.deviceId]?.hostsLastSeen ?? [:]
+        hosts[host] = now
+        hosts = hosts.filter { now.timeIntervalSince($0.value) <= Self.announcementMaxAge }
+        announcements[identity.deviceId] = Announcement(
+            identity: identity, host: host, port: port, at: now, hostsLastSeen: hosts
+        )
+        announcements = announcements.filter { now.timeIntervalSince($0.value.at) <= Self.announcementMaxAge }
+    }
+
+    /// When this device last announced itself over UDP (any address).
+    /// Used by the liveness reconciler to tell "peer left" from "peer is
+    /// alive but the link went quiet".
+    public func lastAnnounce(deviceId: String) -> Date? {
+        linkLock.lock()
+        defer { linkLock.unlock() }
+        return announcements[deviceId]?.at
+    }
+
+    /// Re-dial a peer whose TCP link has been silent past the liveness
+    /// hard TTL while its UDP announcements keep arriving: the peer is
+    /// alive but the link is suspect (silent vanish and return, half-open
+    /// socket). Dialing the announced address replaces the existing
+    /// link's channel via the normal `handleIdentity` path on success —
+    /// the device is never marked offline in between. No-ops without a
+    /// fresh announcement or while the dial cooldown is active.
+    public func redialQuietLink(deviceId: String) {
+        queue.async { [weak self] in
+            guard let self else { return }
+            self.linkLock.lock()
+            let announcement = self.announcements[deviceId]
+            let canDial = self.dialCooldown.canDial(deviceId: deviceId)
+            self.linkLock.unlock()
+            guard let announcement, canDial,
+                  Date().timeIntervalSince(announcement.at) <= Self.announceQuietThreshold
+            else { return }
+            self.dialOnQueue(
+                identity: announcement.identity,
+                host: announcement.host,
+                port: announcement.port
+            )
         }
     }
 
