@@ -76,4 +76,22 @@ public final class PluginRegistry: @unchecked Sendable {
             await p.handle(packet: packet, from: device)
         }
     }
+
+    @MainActor
+    public func attach(to device: Device) async {
+        let deviceId = device.id
+        for plugin in enabledPlugins where Settings.shared.isPluginEnabled(
+            plugin.identifier,
+            forDevice: deviceId
+        ) {
+            await plugin.attach(to: device)
+        }
+    }
+
+    @MainActor
+    public func detach(from device: Device) async {
+        for plugin in plugins {
+            await plugin.detach(from: device)
+        }
+    }
 }

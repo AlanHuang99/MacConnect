@@ -127,9 +127,14 @@ public enum AnyJSON: Sendable {
 
     public var intValue: Int64? {
         switch self {
-        case .int(let v): v
-        case .double(let v): Int64(v)
-        default: nil
+        case .int(let v): return v
+        case .double(let v):
+            guard v.isFinite,
+                  v >= Double(Int64.min),
+                  v < Double(Int64.max)
+            else { return nil }
+            return Int64(v)
+        default: return nil
         }
     }
 

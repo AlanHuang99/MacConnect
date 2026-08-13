@@ -19,6 +19,9 @@ public enum PacketType {
     public static let mpris = "kdeconnect.mpris"
     public static let mprisRequest = "kdeconnect.mpris.request"
 
+    public static let systemVolume = "kdeconnect.systemvolume"
+    public static let systemVolumeRequest = "kdeconnect.systemvolume.request"
+
     public static let battery = "kdeconnect.battery"
     public static let batteryRequest = "kdeconnect.battery.request"
 

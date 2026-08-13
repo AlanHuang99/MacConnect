@@ -330,6 +330,10 @@ struct DeviceRow: View {
             }
             .controlSize(.small)
             .buttonStyle(.borderless)
+            if let volume = state.volume, volume >= 0 {
+                RemoteVolumeSlider(device: device, volume: volume)
+                    .id(state.player)
+            }
         }
         .padding(8)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
@@ -574,5 +578,42 @@ struct DeviceRow: View {
             }
         }
         .controlSize(.small)
+    }
+}
+
+private struct RemoteVolumeSlider: View {
+    let device: Device
+    let volume: Int
+
+    @State private var draft: Double
+    @State private var isEditing = false
+
+    init(device: Device, volume: Int) {
+        self.device = device
+        self.volume = volume
+        _draft = State(initialValue: Double(volume))
+    }
+
+    var body: some View {
+        HStack(spacing: 6) {
+            Image(systemName: "speaker.fill")
+                .font(.caption2)
+                .foregroundStyle(.secondary)
+            Slider(
+                value: $draft,
+                in: 0 ... 100,
+                onEditingChanged: { editing in
+                    isEditing = editing
+                    if !editing {
+                        MprisPlugin.setVolume(Int(draft.rounded()), for: device)
+                    }
+                }
+            )
+            .controlSize(.small)
+            .accessibilityLabel(Text("Media volume", bundle: .module))
+        }
+        .onChange(of: volume) { newValue in
+            if !isEditing { draft = Double(newValue) }
+        }
     }
 }
