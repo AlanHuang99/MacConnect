@@ -20,6 +20,8 @@ protocol LocalMediaControlling: AnyObject {
     func play()
     func pause()
     func togglePlayPause()
+    func previous()
+    func next()
     func setVolume(_ percent: Int)
 }
 
@@ -41,6 +43,8 @@ final class UnavailableLocalMediaController: LocalMediaControlling {
     func play() {}
     func pause() {}
     func togglePlayPause() {}
+    func previous() {}
+    func next() {}
     func setVolume(_: Int) {}
 }
 
@@ -102,6 +106,14 @@ final class SystemLocalMediaController: LocalMediaControlling {
 
     func togglePlayPause() {
         transport.togglePlayPause()
+    }
+
+    func previous() {
+        transport.previous()
+    }
+
+    func next() {
+        transport.next()
     }
 
     func setVolume(_ percent: Int) {

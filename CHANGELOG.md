@@ -6,6 +6,12 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-08-13
+
+### Added
+
+- KDE Connect Android can now invoke Previous and Next on the Mac's active system media session. The buttons are enabled in Android's Multimedia control alongside the existing Play, Pause, Play-Pause, and synchronized volume controls.
+
 ## [0.4.0] - 2026-08-13
 
 ### Added
@@ -52,7 +58,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Discovery rebuilds on sleep/wake and network changes (Wi-Fi switch, dock/undock) and stale links are dropped, so peers reconnect without an app restart. ([#21](https://github.com/AlanHuang99/MacConnect/pull/21))
 
-[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/AlanHuang99/MacConnect/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.8...v0.4.0
 [0.3.8]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.6...v0.3.7

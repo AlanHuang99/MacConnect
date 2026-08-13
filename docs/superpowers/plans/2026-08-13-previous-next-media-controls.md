@@ -26,7 +26,7 @@
 - Modify: `Sources/MacConnectCore/Plugin/LocalMediaController.swift`
 - Modify: `Sources/MacConnectCore/Plugin/MediaRemoteBridge.swift`
 
-- [ ] **Step 1: Write the failing forwarding test**
+- [x] **Step 1: Write the failing forwarding test**
 
 Extend `FakeMediaRemoteController.Command` with `.previous` and `.next`, invoke both operations from `testSystemControllerCombinesStateAndForwardsCommands`, and expect this complete ordered sequence:
 
@@ -42,7 +42,7 @@ XCTAssertEqual(transport.commands, [.play, .pause, .toggle, .previous, .next])
 
 Add fake methods that record those calls. The test must initially fail to compile because `SystemLocalMediaController` has no navigation methods.
 
-- [ ] **Step 2: Run the focused test and confirm RED**
+- [x] **Step 2: Run the focused test and confirm RED**
 
 Run:
 
@@ -52,7 +52,7 @@ swift test --filter SystemMediaBridgeTests.testSystemControllerCombinesStateAndF
 
 Expected: compiler errors for the absent `previous()` and `next()` methods.
 
-- [ ] **Step 3: Implement the minimal command path**
+- [x] **Step 3: Implement the minimal command path**
 
 Add `previous()` and `next()` to both control protocols and the unavailable/system controller implementations. Forward the system controller methods directly to its transport.
 
@@ -65,7 +65,7 @@ case previous = 5
 
 Expose bridge methods that call `send(.previous)` and `send(.next)`. Keep the existing rejection log and post-command refresh path unchanged.
 
-- [ ] **Step 4: Run the focused test and confirm GREEN**
+- [x] **Step 4: Run the focused test and confirm GREEN**
 
 Run:
 
@@ -84,7 +84,7 @@ Expected: pass.
 - Modify: `Tests/MacConnectCoreTests/LocalMprisServiceTests.swift`
 - Modify: `Sources/MacConnectCore/Plugin/LocalMprisService.swift`
 
-- [ ] **Step 1: Write failing service behavior tests**
+- [x] **Step 1: Write failing service behavior tests**
 
 Rename the state serialization test to reflect available navigation and change these assertions:
 
@@ -104,7 +104,7 @@ XCTAssertEqual(fake.commands, [.play, .pause, .toggle, .previous, .next])
 
 Make the fake controller conform to the extended protocol and record the new cases.
 
-- [ ] **Step 2: Run the service tests and confirm RED**
+- [x] **Step 2: Run the service tests and confirm RED**
 
 Run:
 
@@ -114,7 +114,7 @@ swift test --filter LocalMprisServiceTests
 
 Expected: the navigation capability assertions and action sequence fail.
 
-- [ ] **Step 3: Implement the minimal request mapping**
+- [x] **Step 3: Implement the minimal request mapping**
 
 In `LocalMprisService.handle`, map `Previous` and `Next` to the matching controller methods after the existing elected-player identity check. In `currentStatePacket`, set both navigation flags from `snapshot.transportAvailable`:
 
@@ -123,7 +123,7 @@ In `LocalMprisService.handle`, map `Previous` and `Next` to the matching control
 "canGoPrevious": .bool(snapshot.transportAvailable),
 ```
 
-- [ ] **Step 4: Run focused and complete tests**
+- [x] **Step 4: Run focused and complete tests**
 
 Run:
 
@@ -143,11 +143,11 @@ Expected: all pass.
 - Modify: `README.md`
 - Modify: `CHANGELOG.md`
 
-- [ ] **Step 1: Update user-facing documentation**
+- [x] **Step 1: Update user-facing documentation**
 
 Clarify in the README that Android can invoke Play, Pause, Previous, and Next on the elected Mac session. Add a v0.4.1 changelog entry dated 2026-08-13 and advance the comparison links from v0.4.0 to v0.4.1.
 
-- [ ] **Step 2: Run all local static and build checks**
+- [x] **Step 2: Run all local static and build checks**
 
 Run the repository's exact CI-equivalent checks:
 
@@ -162,7 +162,7 @@ swiftformat --lint .
 
 Also build the universal direct app with version 0.4.1, confirm arm64 and x86_64 slices, confirm its direct-update framework/rpath configuration, and inspect the resulting bundle metadata.
 
-- [ ] **Step 3: Review the complete branch diff**
+- [x] **Step 3: Review the complete branch diff**
 
 Confirm every changed line is required for Previous/Next or v0.4.1 release documentation, and that existing Play/Pause/volume behavior is untouched.
 
@@ -174,19 +174,19 @@ Confirm every changed line is required for Previous/Next or v0.4.1 release docum
 
 - No source changes expected.
 
-- [ ] **Step 1: Launch the fresh v0.4.1 build**
+- [x] **Step 1: Launch the fresh v0.4.1 build**
 
 Quit any older MacConnect process, launch the newly built app, and confirm it connects to the paired K60. Use `ADB_LIBUSB=1` for Wi-Fi ADB and confirm the authorized K60 serial before interacting with it.
 
-- [ ] **Step 2: Verify Android control availability**
+- [x] **Step 2: Verify Android control availability**
 
 Open KDE Connect's Multimedia control for MacConnect on the K60, select the active Mac player, and inspect the UI hierarchy to confirm Previous and Next are present and enabled.
 
-- [ ] **Step 3: Verify both operations against real media**
+- [x] **Step 3: Verify both operations against real media**
 
 Use a deterministic multi-track Music queue. Record the Mac's current track, invoke Next on the K60, confirm the track changes forward, then invoke Previous and confirm it returns. Reconfirm Play/Pause and volume still work. Check IINA when its current media has navigable playlist items.
 
-- [ ] **Step 4: Capture concise evidence**
+- [x] **Step 4: Capture concise evidence**
 
 Retain the device serial/state, before/after track names, UI enabled state, and relevant MacConnect logs for the release handoff.
 

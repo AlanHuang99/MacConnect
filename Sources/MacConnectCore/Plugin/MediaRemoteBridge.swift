@@ -189,6 +189,8 @@ protocol MediaRemoteControlling: AnyObject {
     func play()
     func pause()
     func togglePlayPause()
+    func previous()
+    func next()
 }
 
 @MainActor
@@ -197,6 +199,8 @@ final class MediaRemoteBridge: MediaRemoteControlling {
         case play = 0
         case pause = 1
         case togglePlayPause = 2
+        case next = 4
+        case previous = 5
     }
 
     private typealias GetNowPlayingInfo = @convention(c) (
@@ -344,6 +348,14 @@ final class MediaRemoteBridge: MediaRemoteControlling {
 
     func togglePlayPause() {
         send(.togglePlayPause)
+    }
+
+    func previous() {
+        send(.previous)
+    }
+
+    func next() {
+        send(.next)
     }
 
     private func observe(_ name: Notification.Name) {

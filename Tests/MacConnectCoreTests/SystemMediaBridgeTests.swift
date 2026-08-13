@@ -127,9 +127,11 @@ final class SystemMediaBridgeTests: XCTestCase {
         controller.play()
         controller.pause()
         controller.togglePlayPause()
+        controller.previous()
+        controller.next()
         controller.setVolume(73)
 
-        XCTAssertEqual(transport.commands, [.play, .pause, .toggle])
+        XCTAssertEqual(transport.commands, [.play, .pause, .toggle, .previous, .next])
         XCTAssertEqual(volume.requestedVolumes, [73])
     }
 
@@ -230,6 +232,8 @@ private final class FakeMediaRemoteController: MediaRemoteControlling {
         case play
         case pause
         case toggle
+        case previous
+        case next
     }
 
     var state: MediaRemoteState
@@ -250,6 +254,14 @@ private final class FakeMediaRemoteController: MediaRemoteControlling {
 
     func togglePlayPause() {
         commands.append(.toggle)
+    }
+
+    func previous() {
+        commands.append(.previous)
+    }
+
+    func next() {
+        commands.append(.next)
     }
 
     func emitChange() {
