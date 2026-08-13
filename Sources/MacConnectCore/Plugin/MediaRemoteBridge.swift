@@ -1,7 +1,7 @@
 import Darwin
 @preconcurrency import Foundation
 
-struct MediaRemoteState: Equatable, Sendable {
+struct MediaRemoteState: Equatable {
     var title: String?
     var artist: String?
     var album: String?
@@ -21,7 +21,7 @@ struct MediaRemoteState: Equatable, Sendable {
     )
 }
 
-struct MediaRemoteMetadataKeys: Sendable {
+struct MediaRemoteMetadataKeys {
     var title: String?
     var artist: String?
     var album: String?
@@ -56,7 +56,7 @@ enum MediaRemoteMetadataMapper {
         guard let key, let number = information[key] as? NSNumber else { return nil }
         let seconds = number.doubleValue
         guard seconds.isFinite, seconds >= 0 else { return nil }
-        return Int64((seconds * 1_000).rounded())
+        return Int64((seconds * 1000).rounded())
     }
 }
 

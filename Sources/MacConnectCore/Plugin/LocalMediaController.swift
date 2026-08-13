@@ -1,6 +1,6 @@
 @preconcurrency import Foundation
 
-struct LocalMediaSnapshot: Equatable, Sendable {
+struct LocalMediaSnapshot: Equatable {
     var title: String?
     var artist: String?
     var album: String?

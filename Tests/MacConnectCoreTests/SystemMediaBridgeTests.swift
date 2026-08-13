@@ -22,7 +22,7 @@ final class SystemMediaBridgeTests: XCTestCase {
             isPlaying: true,
             isAvailable: true,
             lengthMs: 200_000,
-            positionMs: 15_000
+            positionMs: 15000
         ))
         let volume = FakeSystemVolumeController(volume: 64)
         let controller = SystemLocalMediaController(
@@ -38,7 +38,7 @@ final class SystemMediaBridgeTests: XCTestCase {
             transportAvailable: true,
             volume: 64,
             lengthMs: 200_000,
-            positionMs: 15_000
+            positionMs: 15000
         ))
 
         controller.play()
@@ -95,7 +95,7 @@ final class SystemMediaBridgeTests: XCTestCase {
         XCTAssertEqual(state.artist, "Singer")
         XCTAssertEqual(state.album, "Record")
         XCTAssertEqual(state.lengthMs, 201_500)
-        XCTAssertEqual(state.positionMs, 9_250)
+        XCTAssertEqual(state.positionMs, 9250)
         XCTAssertTrue(state.isPlaying)
         XCTAssertTrue(state.isAvailable)
     }
@@ -157,10 +157,21 @@ private final class FakeMediaRemoteController: MediaRemoteControlling {
         self.state = state
     }
 
-    func play() { commands.append(.play) }
-    func pause() { commands.append(.pause) }
-    func togglePlayPause() { commands.append(.toggle) }
-    func emitChange() { onChange?() }
+    func play() {
+        commands.append(.play)
+    }
+
+    func pause() {
+        commands.append(.pause)
+    }
+
+    func togglePlayPause() {
+        commands.append(.toggle)
+    }
+
+    func emitChange() {
+        onChange?()
+    }
 }
 
 @MainActor
@@ -177,5 +188,7 @@ private final class FakeSystemVolumeController: SystemVolumeProviding {
         requestedVolumes.append(percent)
     }
 
-    func emitChange() { onChange?() }
+    func emitChange() {
+        onChange?()
+    }
 }

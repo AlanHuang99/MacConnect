@@ -41,7 +41,7 @@ final class LocalMprisServiceTests: XCTestCase {
             transportAvailable: true,
             volume: 42,
             lengthMs: 180_000,
-            positionMs: 12_000
+            positionMs: 12000
         ))
 
         let response = LocalMprisService(controller: fake).handle(.nowPlayingRequest).first
@@ -58,7 +58,7 @@ final class LocalMprisServiceTests: XCTestCase {
         XCTAssertEqual(response?.body["canGoPrevious"]?.boolValue, false)
         XCTAssertEqual(response?.body["volume"]?.intValue, 42)
         XCTAssertEqual(response?.body["length"]?.intValue, 180_000)
-        XCTAssertEqual(response?.body["pos"]?.intValue, 12_000)
+        XCTAssertEqual(response?.body["pos"]?.intValue, 12000)
     }
 
     func testUnavailableFieldsAreOmittedAndVolumeUsesProtocolSentinel() {
@@ -141,11 +141,25 @@ final class FakeLocalMediaController: LocalMediaControlling {
         self.snapshot = snapshot
     }
 
-    func play() { commands.append(.play) }
-    func pause() { commands.append(.pause) }
-    func togglePlayPause() { commands.append(.toggle) }
-    func setVolume(_ percent: Int) { volumes.append(percent) }
-    func emitChange() { onStateChange?() }
+    func play() {
+        commands.append(.play)
+    }
+
+    func pause() {
+        commands.append(.pause)
+    }
+
+    func togglePlayPause() {
+        commands.append(.toggle)
+    }
+
+    func setVolume(_ percent: Int) {
+        volumes.append(percent)
+    }
+
+    func emitChange() {
+        onStateChange?()
+    }
 }
 
 private extension LocalMediaSnapshot {

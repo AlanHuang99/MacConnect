@@ -163,8 +163,8 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
     }
 
     private func resolveVolumeAddresses(for device: AudioDeviceID) -> [AudioObjectPropertyAddress] {
-        let master = volumeAddress(element: kAudioObjectPropertyElementMain)
-        if isWritable(master, on: device) { return [master] }
+        let mainVolume = volumeAddress(element: kAudioObjectPropertyElementMain)
+        if isWritable(mainVolume, on: device) { return [mainVolume] }
 
         let channelCount = outputChannelCount(for: device)
         guard channelCount > 0 else { return [] }
