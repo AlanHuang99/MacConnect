@@ -21,7 +21,7 @@ MacConnect lives in the menu bar and speaks the KDE Connect LAN protocol (versio
 - **File transfer** — send from the popover, by drag-and-drop onto a device row, or from Finder's right-click → Services → "Send via MacConnect". Incoming files land in `~/Downloads`; active transfers show an inline progress bar and the last 20 are listed in Settings.
 - **Clipboard** — push the Mac clipboard to a device and auto-apply incoming clipboard, with an image fallback that sends the pasteboard image as a file.
 - **Notifications** — Android notifications appear as macOS banners, with inline reply where the notification supports it.
-- **Media control (MPRIS)** — a now-playing tile per device with title and artist plus Play-Pause, Next, and Previous.
+- **Two-way media control (MPRIS)** — control a peer's playback and volume from its now-playing tile, or use KDE Connect Android to control the Mac's active system media session and output volume.
 - **Battery** — the peer's charge level and charging state on the device row.
 - **Find My Phone** — ring a paired device from its menu.
 - **Per-plugin control** — enable or disable each plugin globally or per device.

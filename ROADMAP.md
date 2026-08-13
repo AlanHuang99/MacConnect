@@ -11,7 +11,7 @@
 - Mac App Store submission pipeline (sandbox entitlements, provisioning profile, `productbuild` package, App Store Connect upload). The Sparkle-free default build is already the App Store channel; only the submission tooling is missing.
 - App About window in addition to the Settings section.
 - Non-English localizations (catalog wiring is in place; `Localizable.xcstrings` only ships `en` today).
-- Volume + seek bar on the MPRIS now-playing tile.
+- Seek bar on the MPRIS now-playing tile.
 
 ## Open questions
 
