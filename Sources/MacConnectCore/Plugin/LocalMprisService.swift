@@ -29,6 +29,10 @@ final class LocalMprisService {
                 controller.pause()
             case "PlayPause":
                 controller.togglePlayPause()
+            case "Previous":
+                controller.previous()
+            case "Next":
+                controller.next()
             default:
                 break
             }
@@ -56,8 +60,8 @@ final class LocalMprisService {
             "isPlaying": .bool(snapshot.isPlaying),
             "canPlay": .bool(snapshot.transportAvailable),
             "canPause": .bool(snapshot.transportAvailable),
-            "canGoNext": .bool(false),
-            "canGoPrevious": .bool(false),
+            "canGoNext": .bool(snapshot.transportAvailable),
+            "canGoPrevious": .bool(snapshot.transportAvailable),
             "canSeek": .bool(false),
             "volume": .int(Int64(snapshot.volume ?? -1))
         ]

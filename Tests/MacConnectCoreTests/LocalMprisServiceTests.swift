@@ -47,7 +47,7 @@ final class LocalMprisServiceTests: XCTestCase {
         XCTAssertEqual(service.currentStatePacket()?.body["player"]?.stringValue, "IINA")
     }
 
-    func testNowPlayingSerializesSnapshotAndUnavailableNavigation() {
+    func testNowPlayingSerializesSnapshotAndAvailableNavigation() {
         let fake = FakeLocalMediaController(snapshot: .fixture(
             title: "Track",
             artist: "Artist",
@@ -69,8 +69,8 @@ final class LocalMprisServiceTests: XCTestCase {
         XCTAssertEqual(response?.body["isPlaying"]?.boolValue, true)
         XCTAssertEqual(response?.body["canPlay"]?.boolValue, true)
         XCTAssertEqual(response?.body["canPause"]?.boolValue, true)
-        XCTAssertEqual(response?.body["canGoNext"]?.boolValue, false)
-        XCTAssertEqual(response?.body["canGoPrevious"]?.boolValue, false)
+        XCTAssertEqual(response?.body["canGoNext"]?.boolValue, true)
+        XCTAssertEqual(response?.body["canGoPrevious"]?.boolValue, true)
         XCTAssertEqual(response?.body["volume"]?.intValue, 42)
         XCTAssertEqual(response?.body["length"]?.intValue, 180_000)
         XCTAssertEqual(response?.body["pos"]?.intValue, 12000)
@@ -92,17 +92,18 @@ final class LocalMprisServiceTests: XCTestCase {
         XCTAssertEqual(response.body["volume"]?.intValue, -1)
     }
 
-    func testPlayPauseActionsRouteOnlyForMacPlayer() {
+    func testTransportActionsRouteOnlyForMacPlayer() {
         let fake = FakeLocalMediaController(snapshot: .fixture())
         let service = LocalMprisService(controller: fake)
 
         _ = service.handle(.action("Play"))
         _ = service.handle(.action("Pause"))
         _ = service.handle(.action("PlayPause"))
+        _ = service.handle(.action("Previous"))
         _ = service.handle(.action("Next"))
         _ = service.handle(.action("Play", player: "Other"))
 
-        XCTAssertEqual(fake.commands, [.play, .pause, .toggle])
+        XCTAssertEqual(fake.commands, [.play, .pause, .toggle, .previous, .next])
     }
 
     func testSetVolumeClampsBothProtocolBoundaries() {
@@ -157,6 +158,8 @@ final class FakeLocalMediaController: LocalMediaControlling {
         case play
         case pause
         case toggle
+        case previous
+        case next
     }
 
     var snapshot: LocalMediaSnapshot
@@ -178,6 +181,14 @@ final class FakeLocalMediaController: LocalMediaControlling {
 
     func togglePlayPause() {
         commands.append(.toggle)
+    }
+
+    func previous() {
+        commands.append(.previous)
+    }
+
+    func next() {
+        commands.append(.next)
     }
 
     func setVolume(_ percent: Int) {
