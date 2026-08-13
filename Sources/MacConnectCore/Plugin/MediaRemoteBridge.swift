@@ -60,6 +60,19 @@ enum MediaRemoteMetadataMapper {
     }
 }
 
+struct MediaRemoteRefreshGeneration {
+    private var value: UInt = 0
+
+    mutating func begin() -> UInt {
+        value &+= 1
+        return value
+    }
+
+    func isCurrent(_ candidate: UInt) -> Bool {
+        candidate == value
+    }
+}
+
 @MainActor
 protocol MediaRemoteControlling: AnyObject {
     var state: MediaRemoteState { get }
@@ -174,6 +187,7 @@ final class MediaRemoteBridge: MediaRemoteControlling {
 
     private let symbols: Symbols?
     private var observers: [NSObjectProtocol] = []
+    private var refreshGeneration = MediaRemoteRefreshGeneration()
 
     private(set) var state: MediaRemoteState = .unavailable
     var onChange: (() -> Void)?
@@ -222,7 +236,9 @@ final class MediaRemoteBridge: MediaRemoteControlling {
 
     private func send(_ command: Command) {
         guard let symbols else { return }
-        _ = symbols.sendCommand(command.rawValue, nil)
+        if !symbols.sendCommand(command.rawValue, nil) {
+            Log.plugin.error("MediaRemote rejected playback command \(command.rawValue, privacy: .public)")
+        }
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
             self?.refresh()
         }
@@ -230,11 +246,15 @@ final class MediaRemoteBridge: MediaRemoteControlling {
 
     private func refresh() {
         guard let symbols else { return }
+        let generation = refreshGeneration.begin()
 
         symbols.getNowPlayingInfo(.main) { [weak self] dictionary in
             let information = dictionary as NSDictionary? as? [String: Any] ?? [:]
             Task { @MainActor in
-                guard let self, let symbols = self.symbols else { return }
+                guard let self,
+                      self.refreshGeneration.isCurrent(generation),
+                      let symbols = self.symbols
+                else { return }
                 self.state = MediaRemoteMetadataMapper.map(
                     information,
                     isPlaying: self.state.isPlaying,
@@ -246,7 +266,7 @@ final class MediaRemoteBridge: MediaRemoteControlling {
 
         symbols.getIsPlaying(.main) { [weak self] isPlaying in
             Task { @MainActor in
-                guard let self else { return }
+                guard let self, self.refreshGeneration.isCurrent(generation) else { return }
                 self.state.isPlaying = isPlaying
                 self.state.isAvailable = true
                 self.onChange?()

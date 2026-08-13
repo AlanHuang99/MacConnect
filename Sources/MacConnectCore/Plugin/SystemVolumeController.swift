@@ -16,6 +16,31 @@ enum SystemVolumeMath {
     }
 }
 
+struct SystemVolumeAddressStrategy {
+    let primaryElements: [AudioObjectPropertyElement]
+    let fallbackElements: [AudioObjectPropertyElement]
+
+    static func preferredElements(
+        mainIsReadable: Bool,
+        usableChannelElements: [AudioObjectPropertyElement]
+    ) -> [AudioObjectPropertyElement] {
+        mainIsReadable ? [kAudioObjectPropertyElementMain] : usableChannelElements
+    }
+
+    static func resolve(
+        mainIsReadable: Bool,
+        usableChannelElements: [AudioObjectPropertyElement]
+    ) -> SystemVolumeAddressStrategy {
+        SystemVolumeAddressStrategy(
+            primaryElements: preferredElements(
+                mainIsReadable: mainIsReadable,
+                usableChannelElements: usableChannelElements
+            ),
+            fallbackElements: mainIsReadable ? usableChannelElements : []
+        )
+    }
+}
+
 @MainActor
 protocol SystemVolumeProviding: AnyObject {
     var volume: Int? { get }
@@ -50,30 +75,46 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
                 queue,
                 block
             )
-            guard status == noErr else { return nil }
+            guard status == noErr else {
+                Log.plugin.error(
+                    "Core Audio listener registration failed with status \(status, privacy: .public)"
+                )
+                return nil
+            }
         }
 
         deinit {
             var mutableAddress = address
-            AudioObjectRemovePropertyListenerBlock(
+            let status = AudioObjectRemovePropertyListenerBlock(
                 objectID,
                 &mutableAddress,
                 queue,
                 block
             )
+            if status != noErr {
+                Log.plugin.error(
+                    "Core Audio listener removal failed with status \(status, privacy: .public)"
+                )
+            }
         }
     }
 
     private let systemObject = AudioObjectID(kAudioObjectSystemObject)
     private var defaultDevice = AudioDeviceID(kAudioObjectUnknown)
     private var volumeAddresses: [AudioObjectPropertyAddress] = []
+    private var fallbackVolumeAddresses: [AudioObjectPropertyAddress] = []
     private var systemListener: ListenerRegistration?
     private var deviceListeners: [ListenerRegistration] = []
 
     var onChange: (() -> Void)?
 
     var volume: Int? {
-        let scalars = volumeAddresses.compactMap { readScalar(objectID: defaultDevice, address: $0) }
+        var scalars = volumeAddresses.compactMap { readScalar(objectID: defaultDevice, address: $0) }
+        if scalars.isEmpty {
+            scalars = fallbackVolumeAddresses.compactMap {
+                readScalar(objectID: defaultDevice, address: $0)
+            }
+        }
         guard let mean = SystemVolumeMath.average(scalars) else { return nil }
         return SystemVolumeMath.percent(fromScalar: mean)
     }
@@ -85,9 +126,18 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
 
     func setVolume(_ percent: Int) {
         let scalar = SystemVolumeMath.scalar(fromPercent: percent)
+        var wroteValue = write(scalar, to: volumeAddresses)
+        if !wroteValue {
+            wroteValue = write(scalar, to: fallbackVolumeAddresses)
+        }
+
+        if wroteValue { onChange?() }
+    }
+
+    private func write(_ scalar: Float32, to addresses: [AudioObjectPropertyAddress]) -> Bool {
         var wroteValue = false
 
-        for address in volumeAddresses {
+        for address in addresses {
             var mutableAddress = address
             var value = scalar
             let status = AudioObjectSetPropertyData(
@@ -104,8 +154,7 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
                 Log.plugin.error("Core Audio volume write failed with status \(status, privacy: .public)")
             }
         }
-
-        if wroteValue { onChange?() }
+        return wroteValue
     }
 
     private func observeDefaultDevice() {
@@ -129,6 +178,7 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
     private func reconfigureDevice() {
         deviceListeners.removeAll()
         volumeAddresses.removeAll()
+        fallbackVolumeAddresses.removeAll()
 
         guard let device = readDefaultOutputDevice() else {
             defaultDevice = AudioDeviceID(kAudioObjectUnknown)
@@ -136,8 +186,10 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
         }
 
         defaultDevice = device
-        volumeAddresses = resolveVolumeAddresses(for: device)
-        deviceListeners = volumeAddresses.compactMap { address in
+        let resolved = resolveVolumeAddresses(for: device)
+        volumeAddresses = resolved.primary
+        fallbackVolumeAddresses = resolved.fallback
+        deviceListeners = (volumeAddresses + fallbackVolumeAddresses).compactMap { address in
             ListenerRegistration(objectID: device, address: address, queue: .main) { [weak self] _, _ in
                 Task { @MainActor in self?.onChange?() }
             }
@@ -162,15 +214,28 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
         return device
     }
 
-    private func resolveVolumeAddresses(for device: AudioDeviceID) -> [AudioObjectPropertyAddress] {
+    private func resolveVolumeAddresses(
+        for device: AudioDeviceID
+    ) -> (primary: [AudioObjectPropertyAddress], fallback: [AudioObjectPropertyAddress]) {
         let mainVolume = volumeAddress(element: kAudioObjectPropertyElementMain)
-        if isWritable(mainVolume, on: device) { return [mainVolume] }
-
         let channelCount = outputChannelCount(for: device)
-        guard channelCount > 0 else { return [] }
-        return (1 ... channelCount)
-            .map(volumeAddress(element:))
-            .filter { isWritable($0, on: device) }
+        let usableChannelElements = channelCount > 0
+            ? (1 ... channelCount).filter {
+                let address = volumeAddress(element: $0)
+                return isWritable(address, on: device) &&
+                    readScalar(objectID: device, address: address) != nil
+            }
+            : []
+        let mainIsReadable = isWritable(mainVolume, on: device) &&
+            readScalar(objectID: device, address: mainVolume) != nil
+        let strategy = SystemVolumeAddressStrategy.resolve(
+            mainIsReadable: mainIsReadable,
+            usableChannelElements: usableChannelElements
+        )
+        return (
+            primary: strategy.primaryElements.map(volumeAddress(element:)),
+            fallback: strategy.fallbackElements.map(volumeAddress(element:))
+        )
     }
 
     private func volumeAddress(element: AudioObjectPropertyElement) -> AudioObjectPropertyAddress {
@@ -186,6 +251,11 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
         guard AudioObjectHasProperty(device, &address) else { return false }
         var settable = DarwinBoolean(false)
         let status = AudioObjectIsPropertySettable(device, &address, &settable)
+        if status != noErr {
+            Log.plugin.error(
+                "Core Audio volume capability read failed with status \(status, privacy: .public)"
+            )
+        }
         return status == noErr && settable.boolValue
     }
 
@@ -196,7 +266,13 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
             mElement: kAudioObjectPropertyElementMain
         )
         var size: UInt32 = 0
-        guard AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size) == noErr, size > 0 else {
+        let sizeStatus = AudioObjectGetPropertyDataSize(device, &address, 0, nil, &size)
+        guard sizeStatus == noErr, size > 0 else {
+            if sizeStatus != noErr {
+                Log.plugin.error(
+                    "Core Audio channel count size read failed with status \(sizeStatus, privacy: .public)"
+                )
+            }
             return 0
         }
 
@@ -206,7 +282,11 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
         )
         defer { storage.deallocate() }
         let bufferList = storage.bindMemory(to: AudioBufferList.self, capacity: 1)
-        guard AudioObjectGetPropertyData(device, &address, 0, nil, &size, bufferList) == noErr else {
+        let readStatus = AudioObjectGetPropertyData(device, &address, 0, nil, &size, bufferList)
+        guard readStatus == noErr else {
+            Log.plugin.error(
+                "Core Audio channel count read failed with status \(readStatus, privacy: .public)"
+            )
             return 0
         }
 
@@ -223,7 +303,10 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
         var scalar = Float32(0)
         var size = UInt32(MemoryLayout<Float32>.size)
         let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &scalar)
-        guard status == noErr else { return nil }
+        guard status == noErr else {
+            Log.plugin.error("Core Audio volume read failed with status \(status, privacy: .public)")
+            return nil
+        }
         return Double(scalar)
     }
 }

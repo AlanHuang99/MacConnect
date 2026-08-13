@@ -332,6 +332,7 @@ struct DeviceRow: View {
             .buttonStyle(.borderless)
             if let volume = state.volume, volume >= 0 {
                 RemoteVolumeSlider(device: device, volume: volume)
+                    .id(state.player)
             }
         }
         .padding(8)

@@ -122,6 +122,18 @@ final class LocalMprisServiceTests: XCTestCase {
 
         XCTAssertTrue(fake.volumes.isEmpty)
     }
+
+    func testOutOfRangeNumericVolumeDoesNotExecuteCommand() {
+        let fake = FakeLocalMediaController(snapshot: .fixture())
+        let packet = NetworkPacket(
+            type: PacketType.mprisRequest,
+            body: ["player": .string("Mac"), "setVolume": .double(1e300)]
+        )
+
+        _ = LocalMprisService(controller: fake).handle(packet)
+
+        XCTAssertTrue(fake.volumes.isEmpty)
+    }
 }
 
 @MainActor

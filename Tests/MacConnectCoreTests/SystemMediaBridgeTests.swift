@@ -2,6 +2,36 @@
 import XCTest
 
 final class SystemMediaBridgeTests: XCTestCase {
+    func testRefreshGenerationRejectsOlderCompletion() {
+        var generation = MediaRemoteRefreshGeneration()
+
+        let first = generation.begin()
+        let second = generation.begin()
+
+        XCTAssertFalse(generation.isCurrent(first))
+        XCTAssertTrue(generation.isCurrent(second))
+    }
+
+    func testVolumeAddressStrategyFallsBackWhenMainVolumeIsUnreadable() {
+        XCTAssertEqual(
+            SystemVolumeAddressStrategy.preferredElements(
+                mainIsReadable: false,
+                usableChannelElements: [1, 2]
+            ),
+            [1, 2]
+        )
+    }
+
+    func testVolumeAddressStrategyKeepsChannelsAsRuntimeFallback() {
+        let strategy = SystemVolumeAddressStrategy.resolve(
+            mainIsReadable: true,
+            usableChannelElements: [1, 2]
+        )
+
+        XCTAssertEqual(strategy.primaryElements, [0])
+        XCTAssertEqual(strategy.fallbackElements, [1, 2])
+    }
+
     func testVolumeMathClampsAndRoundsProtocolPercent() {
         XCTAssertEqual(SystemVolumeMath.percent(fromScalar: 0.425), 43)
         XCTAssertEqual(SystemVolumeMath.scalar(fromPercent: -3), 0.0)
