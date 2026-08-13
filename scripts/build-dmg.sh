@@ -94,7 +94,13 @@ done
 # Attach the writable DMG so we can apply Finder layout via AppleScript.
 echo ">> Attaching to apply Finder layout"
 MOUNT_POINT="$(mktemp -d)/$VOLNAME"
-hdiutil attach "$RW_DMG" -mountpoint "$MOUNT_POINT" -noautoopen -noverify >/dev/null
+ATTACH_OUTPUT="$(hdiutil attach "$RW_DMG" -mountpoint "$MOUNT_POINT" -noautoopen -noverify)"
+DMG_DEVICE="$(printf '%s\n' "$ATTACH_OUTPUT" | awk 'NR == 1 { print $1 }')"
+if [[ "$DMG_DEVICE" != /dev/disk* ]]; then
+  echo "Could not determine attached device from hdiutil output:" >&2
+  printf '%s\n' "$ATTACH_OUTPUT" >&2
+  exit 1
+fi
 
 # Mark the volume to use a custom icon (chflags + Finder reload).
 # `SetFile` is part of the Xcode CLT toolchain; fall back silently if absent.
@@ -132,7 +138,14 @@ sync
 sleep 1
 
 echo ">> Detaching writable DMG"
-hdiutil detach "$MOUNT_POINT" -quiet || hdiutil detach "$MOUNT_POINT" -force
+if ! DETACH_ERROR="$(hdiutil detach "$DMG_DEVICE" -quiet 2>&1)"; then
+  if [[ "$DETACH_ERROR" == *"No such file or directory"* ]]; then
+    echo ">> Writable DMG was already detached"
+  else
+    printf '%s\n' "$DETACH_ERROR" >&2
+    hdiutil detach "$DMG_DEVICE" -force
+  fi
+fi
 
 # Convert to compressed read-only DMG.
 echo ">> Converting to UDZO"
