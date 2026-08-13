@@ -130,26 +130,19 @@ final class LivenessReconcileTests: XCTestCase {
         XCTAssertTrue(probes.isEmpty)
     }
 
-    /// Two MacConnects advertise battery and mpris as receivers on BOTH
-    /// ends (`incoming = [battery]`, `outgoing = [battery.request]`, same
-    /// shape for mpris), so from either side the peer neither accepts a
-    /// `*.request` nor produces the state packet — no silent probe exists.
-    /// This is what made Mac↔Mac pairs invisible to the 0.3.6 reconciler
-    /// and is why `livenessAction` needs the hard-TTL/announcement path at
-    /// all. Uses the real capability sets from BatteryPlugin / MprisPlugin /
-    /// PingPlugin so a future capability change re-evaluates this test.
-    func testMacConnectSymmetricPeerHasNoProbes() {
+    /// Two MacConnects can now probe each other through the controlled side
+    /// of MPRIS. This pins the capability change into liveness behavior so a
+    /// future one-way regression does not silently return Mac peers to the
+    /// slower hard-TTL/announcement recovery path.
+    @MainActor
+    func testMacConnectPeerIsProbeableThroughMpris() {
+        let mpris = MprisPlugin()
         let probes = DeviceManager.supportedProbes(
             batteryEnabled: true, mprisEnabled: true,
-            peerIncoming: [
-                PacketType.battery, PacketType.mpris, PacketType.ping, PacketType.clipboard
-            ],
-            peerOutgoing: [
-                PacketType.batteryRequest, PacketType.mprisRequest, PacketType.ping,
-                PacketType.clipboard
-            ]
+            peerIncoming: Set(mpris.incomingCapabilities),
+            peerOutgoing: Set(mpris.outgoingCapabilities)
         )
-        XCTAssertTrue(probes.isEmpty)
+        XCTAssertEqual(probes, [.mpris])
     }
 
     func testPeerAcceptingTheRequestIsProbeable() {
