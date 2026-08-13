@@ -14,7 +14,7 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
     @MainActor
     public convenience init() {
         self.init(
-            localController: UnavailableLocalMediaController(),
+            localController: SystemLocalMediaController(),
             devices: { DeviceManager.shared.deviceList() },
             pluginEnabled: { Settings.shared.isPluginEnabled("mpris", forDevice: $0) },
             sendPacket: { packet, device in device.send(packet) }

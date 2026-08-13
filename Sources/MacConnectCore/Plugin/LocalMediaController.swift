@@ -1,4 +1,4 @@
-import Foundation
+@preconcurrency import Foundation
 
 struct LocalMediaSnapshot: Equatable, Sendable {
     var title: String?
@@ -41,4 +41,77 @@ final class UnavailableLocalMediaController: LocalMediaControlling {
     func pause() {}
     func togglePlayPause() {}
     func setVolume(_: Int) {}
+}
+
+@MainActor
+final class SystemLocalMediaController: LocalMediaControlling {
+    private let transport: MediaRemoteControlling
+    private let volumeController: SystemVolumeProviding
+    private let notificationDelay: TimeInterval
+    private var pendingNotification: DispatchWorkItem?
+
+    var onStateChange: (() -> Void)?
+
+    var snapshot: LocalMediaSnapshot {
+        let media = transport.state
+        return LocalMediaSnapshot(
+            title: media.title,
+            artist: media.artist,
+            album: media.album,
+            isPlaying: media.isPlaying,
+            transportAvailable: media.isAvailable,
+            volume: volumeController.volume,
+            lengthMs: media.lengthMs,
+            positionMs: media.positionMs
+        )
+    }
+
+    convenience init() {
+        self.init(
+            transport: MediaRemoteBridge(),
+            volumeController: CoreAudioVolumeController()
+        )
+    }
+
+    init(
+        transport: MediaRemoteControlling,
+        volumeController: SystemVolumeProviding,
+        notificationDelay: TimeInterval = 0.1
+    ) {
+        self.transport = transport
+        self.volumeController = volumeController
+        self.notificationDelay = notificationDelay
+
+        transport.onChange = { [weak self] in self?.scheduleNotification() }
+        volumeController.onChange = { [weak self] in self?.scheduleNotification() }
+    }
+
+    deinit {
+        pendingNotification?.cancel()
+    }
+
+    func play() {
+        transport.play()
+    }
+
+    func pause() {
+        transport.pause()
+    }
+
+    func togglePlayPause() {
+        transport.togglePlayPause()
+    }
+
+    func setVolume(_ percent: Int) {
+        volumeController.setVolume(percent)
+    }
+
+    private func scheduleNotification() {
+        pendingNotification?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            self?.onStateChange?()
+        }
+        pendingNotification = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + notificationDelay, execute: work)
+    }
 }
