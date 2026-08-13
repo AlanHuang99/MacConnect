@@ -6,6 +6,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-08-13
+
 ### Added
 
 - Two-way media controls. KDE Connect Android can control the Mac's active system media session with Play, Pause, and Play-Pause, using the elected media app's name instead of a generic Mac player. Android's Multimedia control → Devices tab now exposes Mac Output with synchronized system volume and mute. The Mac's existing peer media tile also includes volume. Mac playback uses the private MediaRemote framework, so this system-wide integration is intended for the direct distribution channel rather than Mac App Store review.
@@ -50,7 +52,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Discovery rebuilds on sleep/wake and network changes (Wi-Fi switch, dock/undock) and stale links are dropped, so peers reconnect without an app restart. ([#21](https://github.com/AlanHuang99/MacConnect/pull/21))
 
-[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.8...HEAD
+[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.8...v0.4.0
 [0.3.8]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.7...v0.3.8
 [0.3.7]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.6...v0.3.7
 [0.3.6]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.5...v0.3.6
