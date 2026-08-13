@@ -1,6 +1,7 @@
 @preconcurrency import Foundation
 
 struct LocalMediaSnapshot: Equatable {
+    var playerName: String?
     var title: String?
     var artist: String?
     var album: String?
@@ -55,6 +56,7 @@ final class SystemLocalMediaController: LocalMediaControlling {
     var snapshot: LocalMediaSnapshot {
         let media = transport.state
         return LocalMediaSnapshot(
+            playerName: media.playerName,
             title: media.title,
             artist: media.artist,
             album: media.album,

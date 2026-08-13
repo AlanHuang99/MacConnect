@@ -41,6 +41,27 @@ final class MprisPluginTests: XCTestCase {
         XCTAssertEqual(MprisStore.shared.state(for: "phone")?.title, "Remote Track")
     }
 
+    func testAttachSendsCurrentPlayerListAndState() async {
+        let recorder = PacketRecorder()
+        var snapshot = populatedSnapshot
+        snapshot.playerName = "IINA"
+        let plugin = MprisPlugin(
+            localController: FakeLocalMediaController(snapshot: snapshot),
+            devices: { [] },
+            pluginEnabled: { _ in true },
+            sendPacket: recorder.record
+        )
+
+        await plugin.attach(to: makeDevice())
+
+        XCTAssertEqual(recorder.packets.count, 2)
+        XCTAssertEqual(
+            recorder.packets.first?.body["playerList"]?.arrayValue?.compactMap(\.stringValue),
+            ["IINA"]
+        )
+        XCTAssertEqual(recorder.packets.last?.body["player"]?.stringValue, "IINA")
+    }
+
     func testRemotePlayerFanoutRequestsVolumeExplicitly() async {
         let recorder = PacketRecorder()
         let plugin = makePlugin(recorder: recorder)
@@ -143,6 +164,28 @@ final class MprisPluginTests: XCTestCase {
             recorder.packets.first?.body["playerList"]?.arrayValue?.compactMap(\.stringValue),
             []
         )
+    }
+
+    func testPlayerApplicationChangeBroadcastsNewListBeforeState() {
+        let device = makeDevice(id: "enabled")
+        let recorder = PacketRecorder()
+        let fake = FakeLocalMediaController(snapshot: populatedSnapshot)
+        let plugin = MprisPlugin(
+            localController: fake,
+            devices: { [device] },
+            pluginEnabled: { _ in true },
+            sendPacket: recorder.record
+        )
+        fake.snapshot.playerName = "IINA"
+
+        withExtendedLifetime(plugin) { fake.emitChange() }
+
+        XCTAssertEqual(recorder.packets.count, 2)
+        XCTAssertEqual(
+            recorder.packets[0].body["playerList"]?.arrayValue?.compactMap(\.stringValue),
+            ["IINA"]
+        )
+        XCTAssertEqual(recorder.packets[1].body["player"]?.stringValue, "IINA")
     }
 
     private var populatedSnapshot: LocalMediaSnapshot {

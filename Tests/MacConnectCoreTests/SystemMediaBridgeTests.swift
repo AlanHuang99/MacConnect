@@ -2,6 +2,57 @@
 import XCTest
 
 final class SystemMediaBridgeTests: XCTestCase {
+    func testReadStrategyUsesAutomationHostWhenLegacyCallbacksAreRestricted() {
+        XCTAssertEqual(
+            MediaRemoteReadStrategy.forVersion(OperatingSystemVersion(
+                majorVersion: 15,
+                minorVersion: 4,
+                patchVersion: 0
+            )),
+            .automationHost
+        )
+        XCTAssertEqual(
+            MediaRemoteReadStrategy.forVersion(OperatingSystemVersion(
+                majorVersion: 26,
+                minorVersion: 0,
+                patchVersion: 0
+            )),
+            .automationHost
+        )
+        XCTAssertEqual(
+            MediaRemoteReadStrategy.forVersion(OperatingSystemVersion(
+                majorVersion: 15,
+                minorVersion: 3,
+                patchVersion: 2
+            )),
+            .legacyCallbacks
+        )
+    }
+
+    func testAutomationSnapshotDecoderMapsLiveNowPlayingState() throws {
+        let data = Data(#"{"available":true,"playerName":"IINA","title":"Song","artist":"Singer","album":"Album","duration":201.5,"elapsed":9.25,"rate":1}"#
+            .utf8)
+
+        let state = try MediaRemoteAutomationSnapshot.decode(data)
+
+        XCTAssertEqual(state, MediaRemoteState(
+            playerName: "IINA",
+            title: "Song",
+            artist: "Singer",
+            album: "Album",
+            isPlaying: true,
+            isAvailable: true,
+            lengthMs: 201_500,
+            positionMs: 9250
+        ))
+    }
+
+    func testAutomationSnapshotDecoderMapsNoActivePlayer() throws {
+        let state = try MediaRemoteAutomationSnapshot.decode(Data(#"{"available":false}"#.utf8))
+
+        XCTAssertEqual(state, .unavailable)
+    }
+
     func testRefreshGenerationRejectsOlderCompletion() {
         var generation = MediaRemoteRefreshGeneration()
 
@@ -46,6 +97,7 @@ final class SystemMediaBridgeTests: XCTestCase {
     @MainActor
     func testSystemControllerCombinesStateAndForwardsCommands() {
         let transport = FakeMediaRemoteController(state: MediaRemoteState(
+            playerName: "IINA",
             title: "Song",
             artist: "Singer",
             album: "Album",
@@ -61,6 +113,7 @@ final class SystemMediaBridgeTests: XCTestCase {
         )
 
         XCTAssertEqual(controller.snapshot, LocalMediaSnapshot(
+            playerName: "IINA",
             title: "Song",
             artist: "Singer",
             album: "Album",
@@ -207,6 +260,7 @@ private final class FakeMediaRemoteController: MediaRemoteControlling {
 @MainActor
 private final class FakeSystemVolumeController: SystemVolumeProviding {
     var volume: Int?
+    var isMuted: Bool? = false
     var onChange: (() -> Void)?
     private(set) var requestedVolumes: [Int] = []
 
@@ -217,6 +271,8 @@ private final class FakeSystemVolumeController: SystemVolumeProviding {
     func setVolume(_ percent: Int) {
         requestedVolumes.append(percent)
     }
+
+    func setMuted(_: Bool) {}
 
     func emitChange() {
         onChange?()

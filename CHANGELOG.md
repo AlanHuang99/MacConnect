@@ -8,7 +8,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Added
 
-- Two-way media controls. KDE Connect Android can control the Mac's active system media session with Play, Pause, Play-Pause, and output-volume controls, while the Mac's existing peer media tile now includes volume. Mac playback uses the private MediaRemote framework, so this system-wide integration is intended for the direct distribution channel rather than Mac App Store review.
+- Two-way media controls. KDE Connect Android can control the Mac's active system media session with Play, Pause, and Play-Pause, using the elected media app's name instead of a generic Mac player. Android's Multimedia control → Devices tab now exposes Mac Output with synchronized system volume and mute. The Mac's existing peer media tile also includes volume. Mac playback uses the private MediaRemote framework, so this system-wide integration is intended for the direct distribution channel rather than Mac App Store review.
 
 ## [0.3.8] - 2026-07-11
 

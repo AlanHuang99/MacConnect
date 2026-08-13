@@ -14,7 +14,7 @@ final class LocalMprisServiceTests: XCTestCase {
         )
     }
 
-    func testPlayerListExposesVolumeOnlyMacAndHidesUnavailableMac() {
+    func testPlayerListDoesNotExposeVolumeAsAFakeMediaPlayer() {
         let volumeOnly = FakeLocalMediaController(snapshot: .fixture(transportAvailable: false, volume: 21))
         let unavailable = FakeLocalMediaController(snapshot: .fixture(transportAvailable: false, volume: nil))
 
@@ -22,7 +22,7 @@ final class LocalMprisServiceTests: XCTestCase {
             LocalMprisService(controller: volumeOnly)
                 .handle(.playerListRequest)[0]
                 .body["playerList"]?.arrayValue?.compactMap(\.stringValue),
-            ["Mac"]
+            []
         )
         XCTAssertEqual(
             LocalMprisService(controller: unavailable)
@@ -30,6 +30,21 @@ final class LocalMprisServiceTests: XCTestCase {
                 .body["playerList"]?.arrayValue?.compactMap(\.stringValue),
             []
         )
+    }
+
+    func testPlayerListAndStateUseCurrentApplicationName() {
+        let fake = FakeLocalMediaController(snapshot: .fixture(
+            playerName: "IINA",
+            title: "Numb",
+            artist: "LINKIN PARK"
+        ))
+        let service = LocalMprisService(controller: fake)
+
+        XCTAssertEqual(
+            service.playerListPacket().body["playerList"]?.arrayValue?.compactMap(\.stringValue),
+            ["IINA"]
+        )
+        XCTAssertEqual(service.currentStatePacket()?.body["player"]?.stringValue, "IINA")
     }
 
     func testNowPlayingSerializesSnapshotAndUnavailableNavigation() {
@@ -176,6 +191,7 @@ final class FakeLocalMediaController: LocalMediaControlling {
 
 private extension LocalMediaSnapshot {
     static func fixture(
+        playerName: String? = nil,
         title: String? = nil,
         artist: String? = nil,
         album: String? = nil,
@@ -186,6 +202,7 @@ private extension LocalMediaSnapshot {
         positionMs: Int64? = nil
     ) -> LocalMediaSnapshot {
         LocalMediaSnapshot(
+            playerName: playerName,
             title: title,
             artist: artist,
             album: album,

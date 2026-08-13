@@ -2,6 +2,7 @@ import Darwin
 @preconcurrency import Foundation
 
 struct MediaRemoteState: Equatable {
+    var playerName: String?
     var title: String?
     var artist: String?
     var album: String?
@@ -19,6 +20,113 @@ struct MediaRemoteState: Equatable {
         lengthMs: nil,
         positionMs: nil
     )
+}
+
+enum MediaRemoteReadStrategy: Equatable {
+    case legacyCallbacks
+    case automationHost
+
+    static var current: MediaRemoteReadStrategy {
+        forVersion(ProcessInfo.processInfo.operatingSystemVersion)
+    }
+
+    static func forVersion(_ version: OperatingSystemVersion) -> MediaRemoteReadStrategy {
+        if version.majorVersion > 15 ||
+            (version.majorVersion == 15 && version.minorVersion >= 4)
+        {
+            return .automationHost
+        }
+        return .legacyCallbacks
+    }
+}
+
+struct MediaRemoteAutomationSnapshot: Decodable {
+    let available: Bool
+    let playerName: String?
+    let title: String?
+    let artist: String?
+    let album: String?
+    let duration: Double?
+    let elapsed: Double?
+    let rate: Double?
+
+    static func decode(_ data: Data) throws -> MediaRemoteState {
+        let snapshot = try JSONDecoder().decode(MediaRemoteAutomationSnapshot.self, from: data)
+        guard snapshot.available else { return .unavailable }
+
+        return MediaRemoteState(
+            playerName: clean(snapshot.playerName),
+            title: clean(snapshot.title),
+            artist: clean(snapshot.artist),
+            album: clean(snapshot.album),
+            isPlaying: snapshot.rate.map { $0 > 0 } ?? false,
+            isAvailable: true,
+            lengthMs: milliseconds(snapshot.duration),
+            positionMs: milliseconds(snapshot.elapsed)
+        )
+    }
+
+    private static func clean(_ value: String?) -> String? {
+        let trimmed = value?.trimmingCharacters(in: .whitespacesAndNewlines)
+        return trimmed?.isEmpty == false ? trimmed : nil
+    }
+
+    private static func milliseconds(_ seconds: Double?) -> Int64? {
+        guard let seconds, seconds.isFinite, seconds >= 0 else { return nil }
+        return Int64((seconds * 1000).rounded())
+    }
+}
+
+private enum MediaRemoteAutomationReader {
+    private static let script = #"""
+    ObjC.import("AppKit");
+    const bundle = $.NSBundle.bundleWithPath("/System/Library/PrivateFrameworks/MediaRemote.framework/");
+    bundle.load;
+    const request = $.NSClassFromString("MRNowPlayingRequest");
+    const item = request.localNowPlayingItem;
+    if (!item) {
+        JSON.stringify({available: false});
+    } else {
+        const info = item.nowPlayingInfo;
+        const path = request.localNowPlayingPlayerPath;
+        const client = path ? path.client : null;
+        const value = (key) => {
+            const result = info.valueForKey(key);
+            return result ? ObjC.unwrap(result) : null;
+        };
+        JSON.stringify({
+            available: true,
+            playerName: client && client.displayName ? ObjC.unwrap(client.displayName) : null,
+            title: value("kMRMediaRemoteNowPlayingInfoTitle"),
+            artist: value("kMRMediaRemoteNowPlayingInfoArtist"),
+            album: value("kMRMediaRemoteNowPlayingInfoAlbum"),
+            duration: value("kMRMediaRemoteNowPlayingInfoDuration"),
+            elapsed: value("kMRMediaRemoteNowPlayingInfoElapsedTime"),
+            rate: value("kMRMediaRemoteNowPlayingInfoPlaybackRate")
+        });
+    }
+    """#
+
+    static func read() async -> MediaRemoteState? {
+        await Task.detached(priority: .utility) {
+            let process = Process()
+            let output = Pipe()
+            process.executableURL = URL(fileURLWithPath: "/usr/bin/osascript")
+            process.arguments = ["-l", "JavaScript", "-e", script]
+            process.standardOutput = output
+            process.standardError = FileHandle.nullDevice
+
+            do {
+                try process.run()
+                process.waitUntilExit()
+                guard process.terminationStatus == 0 else { return nil }
+                let data = output.fileHandleForReading.readDataToEndOfFile()
+                return try MediaRemoteAutomationSnapshot.decode(data)
+            } catch {
+                return nil
+            }
+        }.value
+    }
 }
 
 struct MediaRemoteMetadataKeys {
@@ -186,13 +294,18 @@ final class MediaRemoteBridge: MediaRemoteControlling {
     }
 
     private let symbols: Symbols?
+    private let readStrategy: MediaRemoteReadStrategy
     private var observers: [NSObjectProtocol] = []
     private var refreshGeneration = MediaRemoteRefreshGeneration()
+    private var pollingTask: Task<Void, Never>?
+    private var didLogAutomationFailure = false
+    private var registeredForNotifications = false
 
     private(set) var state: MediaRemoteState = .unavailable
     var onChange: (() -> Void)?
 
-    init() {
+    init(readStrategy: MediaRemoteReadStrategy = .current) {
+        self.readStrategy = readStrategy
         guard let symbols = Symbols() else {
             self.symbols = nil
             Log.plugin.error("MediaRemote is unavailable; local playback control disabled")
@@ -200,16 +313,25 @@ final class MediaRemoteBridge: MediaRemoteControlling {
         }
 
         self.symbols = symbols
-        state.isAvailable = true
-        symbols.registerNotifications(.main)
-        observe(symbols.infoDidChange)
-        observe(symbols.playingDidChange)
-        refresh()
+        switch readStrategy {
+        case .legacyCallbacks:
+            state.isAvailable = true
+            symbols.registerNotifications(.main)
+            registeredForNotifications = true
+            observe(symbols.infoDidChange)
+            observe(symbols.playingDidChange)
+            refresh()
+        case .automationHost:
+            startPolling()
+        }
     }
 
     deinit {
+        pollingTask?.cancel()
         observers.forEach(NotificationCenter.default.removeObserver)
-        symbols?.unregisterNotifications()
+        if registeredForNotifications {
+            symbols?.unregisterNotifications()
+        }
     }
 
     func play() {
@@ -248,6 +370,25 @@ final class MediaRemoteBridge: MediaRemoteControlling {
         guard let symbols else { return }
         let generation = refreshGeneration.begin()
 
+        if readStrategy == .automationHost {
+            Task { [weak self] in
+                let updatedState = await MediaRemoteAutomationReader.read()
+                guard let self, self.refreshGeneration.isCurrent(generation) else { return }
+                guard let updatedState else {
+                    if !self.didLogAutomationFailure {
+                        Log.plugin.error("MediaRemote automation read failed")
+                        self.didLogAutomationFailure = true
+                    }
+                    return
+                }
+                self.didLogAutomationFailure = false
+                guard updatedState != self.state else { return }
+                self.state = updatedState
+                self.onChange?()
+            }
+            return
+        }
+
         symbols.getNowPlayingInfo(.main) { [weak self] dictionary in
             let information = dictionary as NSDictionary? as? [String: Any] ?? [:]
             Task { @MainActor in
@@ -270,6 +411,15 @@ final class MediaRemoteBridge: MediaRemoteControlling {
                 self.state.isPlaying = isPlaying
                 self.state.isAvailable = true
                 self.onChange?()
+            }
+        }
+    }
+
+    private func startPolling() {
+        pollingTask = Task { [weak self] in
+            while !Task.isCancelled {
+                self?.refresh()
+                try? await Task.sleep(for: .seconds(1))
             }
         }
     }

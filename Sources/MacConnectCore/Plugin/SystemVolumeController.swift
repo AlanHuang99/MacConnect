@@ -44,9 +44,11 @@ struct SystemVolumeAddressStrategy {
 @MainActor
 protocol SystemVolumeProviding: AnyObject {
     var volume: Int? { get }
+    var isMuted: Bool? { get }
     var onChange: (() -> Void)? { get set }
 
     func setVolume(_ percent: Int)
+    func setMuted(_ muted: Bool)
 }
 
 @MainActor
@@ -103,6 +105,7 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
     private var defaultDevice = AudioDeviceID(kAudioObjectUnknown)
     private var volumeAddresses: [AudioObjectPropertyAddress] = []
     private var fallbackVolumeAddresses: [AudioObjectPropertyAddress] = []
+    private var muteAddress: AudioObjectPropertyAddress?
     private var systemListener: ListenerRegistration?
     private var deviceListeners: [ListenerRegistration] = []
 
@@ -119,6 +122,11 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
         return SystemVolumeMath.percent(fromScalar: mean)
     }
 
+    var isMuted: Bool? {
+        guard let muteAddress else { return nil }
+        return readMuted(objectID: defaultDevice, address: muteAddress)
+    }
+
     init() {
         observeDefaultDevice()
         reconfigureDevice()
@@ -132,6 +140,24 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
         }
 
         if wroteValue { onChange?() }
+    }
+
+    func setMuted(_ muted: Bool) {
+        guard var address = muteAddress else { return }
+        var value: UInt32 = muted ? 1 : 0
+        let status = AudioObjectSetPropertyData(
+            defaultDevice,
+            &address,
+            0,
+            nil,
+            UInt32(MemoryLayout<UInt32>.size),
+            &value
+        )
+        if status == noErr {
+            onChange?()
+        } else {
+            Log.plugin.error("Core Audio mute write failed with status \(status, privacy: .public)")
+        }
     }
 
     private func write(_ scalar: Float32, to addresses: [AudioObjectPropertyAddress]) -> Bool {
@@ -179,6 +205,7 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
         deviceListeners.removeAll()
         volumeAddresses.removeAll()
         fallbackVolumeAddresses.removeAll()
+        muteAddress = nil
 
         guard let device = readDefaultOutputDevice() else {
             defaultDevice = AudioDeviceID(kAudioObjectUnknown)
@@ -189,7 +216,14 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
         let resolved = resolveVolumeAddresses(for: device)
         volumeAddresses = resolved.primary
         fallbackVolumeAddresses = resolved.fallback
-        deviceListeners = (volumeAddresses + fallbackVolumeAddresses).compactMap { address in
+        let candidateMuteAddress = muteAddressValue()
+        if isWritable(candidateMuteAddress, on: device),
+           readMuted(objectID: device, address: candidateMuteAddress) != nil
+        {
+            muteAddress = candidateMuteAddress
+        }
+        let observedAddresses = volumeAddresses + fallbackVolumeAddresses + [muteAddress].compactMap { $0 }
+        deviceListeners = observedAddresses.compactMap { address in
             ListenerRegistration(objectID: device, address: address, queue: .main) { [weak self] _, _ in
                 Task { @MainActor in self?.onChange?() }
             }
@@ -243,6 +277,14 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
             mSelector: kAudioDevicePropertyVolumeScalar,
             mScope: kAudioDevicePropertyScopeOutput,
             mElement: element
+        )
+    }
+
+    private func muteAddressValue() -> AudioObjectPropertyAddress {
+        AudioObjectPropertyAddress(
+            mSelector: kAudioDevicePropertyMute,
+            mScope: kAudioDevicePropertyScopeOutput,
+            mElement: kAudioObjectPropertyElementMain
         )
     }
 
@@ -308,5 +350,21 @@ final class CoreAudioVolumeController: SystemVolumeProviding {
             return nil
         }
         return Double(scalar)
+    }
+
+    private func readMuted(
+        objectID: AudioObjectID,
+        address suppliedAddress: AudioObjectPropertyAddress
+    ) -> Bool? {
+        guard objectID != kAudioObjectUnknown else { return nil }
+        var address = suppliedAddress
+        var value: UInt32 = 0
+        var size = UInt32(MemoryLayout<UInt32>.size)
+        let status = AudioObjectGetPropertyData(objectID, &address, 0, nil, &size, &value)
+        guard status == noErr else {
+            Log.plugin.error("Core Audio mute read failed with status \(status, privacy: .public)")
+            return nil
+        }
+        return value != 0
     }
 }

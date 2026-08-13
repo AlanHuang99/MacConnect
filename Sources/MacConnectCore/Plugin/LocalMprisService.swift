@@ -2,7 +2,7 @@ import Foundation
 
 @MainActor
 final class LocalMprisService {
-    static let playerName = "Mac"
+    static let fallbackPlayerName = "Mac"
 
     private let controller: LocalMediaControlling
 
@@ -17,7 +17,7 @@ final class LocalMprisService {
             return [playerListPacket()]
         }
 
-        guard packet.body["player"]?.stringValue == Self.playerName else {
+        guard packet.body["player"]?.stringValue == currentPlayerName else {
             return [playerListPacket()]
         }
 
@@ -49,10 +49,10 @@ final class LocalMprisService {
 
     func currentStatePacket() -> NetworkPacket? {
         let snapshot = controller.snapshot
-        guard snapshot.transportAvailable || snapshot.volume != nil else { return nil }
+        guard snapshot.transportAvailable else { return nil }
 
         var body: [String: AnyJSON] = [
-            "player": .string(Self.playerName),
+            "player": .string(currentPlayerName),
             "isPlaying": .bool(snapshot.isPlaying),
             "canPlay": .bool(snapshot.transportAvailable),
             "canPause": .bool(snapshot.transportAvailable),
@@ -72,10 +72,7 @@ final class LocalMprisService {
     }
 
     func playerListPacket() -> NetworkPacket {
-        let snapshot = controller.snapshot
-        let players: [AnyJSON] = snapshot.transportAvailable || snapshot.volume != nil
-            ? [.string(Self.playerName)]
-            : []
+        let players = playerNames.map(AnyJSON.string)
         return NetworkPacket(
             type: PacketType.mpris,
             body: [
@@ -83,5 +80,15 @@ final class LocalMprisService {
                 "supportAlbumArtPayload": .bool(false)
             ]
         )
+    }
+
+    var playerNames: [String] {
+        controller.snapshot.transportAvailable ? [currentPlayerName] : []
+    }
+
+    private var currentPlayerName: String {
+        let trimmed = controller.snapshot.playerName?.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard let trimmed, !trimmed.isEmpty else { return Self.fallbackPlayerName }
+        return trimmed
     }
 }

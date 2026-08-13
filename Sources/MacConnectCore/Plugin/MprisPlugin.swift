@@ -10,6 +10,7 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
     private let devices: @MainActor () -> [Device]
     private let pluginEnabled: @MainActor (String) -> Bool
     private let sendPacket: @MainActor (NetworkPacket, Device) -> Void
+    private var lastBroadcastPlayers: [String]
 
     @MainActor
     public convenience init() {
@@ -32,6 +33,7 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
         self.devices = devices
         self.pluginEnabled = pluginEnabled
         self.sendPacket = sendPacket
+        self.lastBroadcastPlayers = localService.playerNames
         localController.onStateChange = { [weak self] in
             self?.broadcastLocalState()
         }
@@ -71,6 +73,18 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
             }
         }
         MprisStore.shared.update(deviceId: device.id, with: packet)
+    }
+
+    @MainActor
+    public func attach(to device: Device) async {
+        guard Self.canReceiveLocalState(
+            device: device,
+            pluginEnabled: pluginEnabled(device.id)
+        ) else { return }
+        sendPacket(localService.playerListPacket(), device)
+        if let statePacket = localService.currentStatePacket() {
+            sendPacket(statePacket, device)
+        }
     }
 
     /// Ask the peer to enumerate its players. We never request now-playing
@@ -126,12 +140,20 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
 
     @MainActor
     private func broadcastLocalState() {
-        let packet = localService.currentStatePacket() ?? localService.playerListPacket()
+        let statePacket = localService.currentStatePacket()
+        let players = localService.playerNames
+        let playerListChanged = players != lastBroadcastPlayers
+        lastBroadcastPlayers = players
         for device in devices() where Self.canReceiveLocalState(
             device: device,
             pluginEnabled: pluginEnabled(device.id)
         ) {
-            sendPacket(packet, device)
+            if playerListChanged || statePacket == nil {
+                sendPacket(localService.playerListPacket(), device)
+            }
+            if let statePacket {
+                sendPacket(statePacket, device)
+            }
         }
     }
 

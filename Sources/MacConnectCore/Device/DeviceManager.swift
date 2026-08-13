@@ -31,10 +31,14 @@ public final class DeviceManager: ObservableObject {
         device.link = link
         device.isReachable = true
         objectWillChange.send()
+        notifyPluginsAttached(to: device)
     }
 
     public func detach(deviceId: String) {
         guard let device = devices[deviceId] else { return }
+        Task { @MainActor in
+            await PluginRegistry.shared.detach(from: device)
+        }
         device.link = nil
         device.isReachable = false
         // Clear cached now-playing state so a stale title doesn't keep
@@ -58,6 +62,7 @@ public final class DeviceManager: ObservableObject {
         device.outgoingPairRequest = false
         device.send(PairPacketBuilder.response(accept: true))
         objectWillChange.send()
+        notifyPluginsAttached(to: device)
     }
 
     public func rejectPairing(_ device: Device) {
@@ -135,6 +140,7 @@ public final class DeviceManager: ObservableObject {
                 Settings.shared.markTrusted(device.id)
                 device.isPaired = true
                 device.outgoingPairRequest = false
+                notifyPluginsAttached(to: device)
             } else {
                 // Peer is requesting we pair.
                 device.incomingPairRequest = true
@@ -150,6 +156,13 @@ public final class DeviceManager: ObservableObject {
             device.incomingPairRequest = false
         }
         objectWillChange.send()
+    }
+
+    private func notifyPluginsAttached(to device: Device) {
+        guard device.isPaired, device.isReachable else { return }
+        Task { @MainActor in
+            await PluginRegistry.shared.attach(to: device)
+        }
     }
 
     // MARK: - Liveness reconciliation
