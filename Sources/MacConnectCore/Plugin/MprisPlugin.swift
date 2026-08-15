@@ -10,15 +10,18 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
     private let devices: @MainActor () -> [Device]
     private let pluginEnabled: @MainActor (String) -> Bool
     private let sendPacket: @MainActor (NetworkPacket, Device) -> Void
+    private let sendArtwork: @MainActor (MprisArtworkTransfer, Device) -> Void
     private var lastBroadcastPlayers: [String]
 
     @MainActor
     public convenience init() {
+        let artworkSender = MprisArtworkPayloadSender()
         self.init(
             localController: SystemLocalMediaController(),
             devices: { DeviceManager.shared.deviceList() },
             pluginEnabled: { Settings.shared.isPluginEnabled("mpris", forDevice: $0) },
-            sendPacket: { packet, device in device.send(packet) }
+            sendPacket: { packet, device in device.send(packet) },
+            sendArtwork: artworkSender.send
         )
     }
 
@@ -27,12 +30,14 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
         localController: LocalMediaControlling,
         devices: @escaping @MainActor () -> [Device],
         pluginEnabled: @escaping @MainActor (String) -> Bool,
-        sendPacket: @escaping @MainActor (NetworkPacket, Device) -> Void
+        sendPacket: @escaping @MainActor (NetworkPacket, Device) -> Void,
+        sendArtwork: @escaping @MainActor (MprisArtworkTransfer, Device) -> Void = { _, _ in }
     ) {
         self.localService = LocalMprisService(controller: localController)
         self.devices = devices
         self.pluginEnabled = pluginEnabled
         self.sendPacket = sendPacket
+        self.sendArtwork = sendArtwork
         self.lastBroadcastPlayers = localService.playerNames
         localController.onStateChange = { [weak self] in
             self?.broadcastLocalState()
@@ -42,6 +47,10 @@ public final class MprisPlugin: Plugin, @unchecked Sendable {
     @MainActor
     public func handle(packet: NetworkPacket, from device: Device) async {
         if packet.type == PacketType.mprisRequest {
+            if let transfer = localService.artworkTransfer(for: packet) {
+                sendArtwork(transfer, device)
+                return
+            }
             for response in localService.handle(packet) {
                 sendPacket(response, device)
             }

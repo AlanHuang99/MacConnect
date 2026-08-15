@@ -6,6 +6,7 @@ struct MediaRemoteState: Equatable {
     var title: String?
     var artist: String?
     var album: String?
+    var artworkData: Data?
     var isPlaying: Bool
     var isAvailable: Bool
     var lengthMs: Int64?
@@ -15,6 +16,7 @@ struct MediaRemoteState: Equatable {
         title: nil,
         artist: nil,
         album: nil,
+        artworkData: nil,
         isPlaying: false,
         isAvailable: false,
         lengthMs: nil,
@@ -59,6 +61,7 @@ struct MediaRemoteAutomationSnapshot: Decodable {
             title: clean(snapshot.title),
             artist: clean(snapshot.artist),
             album: clean(snapshot.album),
+            artworkData: nil,
             isPlaying: snapshot.rate.map { $0 > 0 } ?? false,
             isAvailable: true,
             lengthMs: milliseconds(snapshot.duration),
@@ -147,6 +150,7 @@ enum MediaRemoteMetadataMapper {
             title: text(information, key: keys.title),
             artist: text(information, key: keys.artist),
             album: text(information, key: keys.album),
+            artworkData: nil,
             isPlaying: isPlaying,
             isAvailable: true,
             lengthMs: milliseconds(information, key: keys.duration),
@@ -212,6 +216,12 @@ final class MediaRemoteBridge: MediaRemoteControlling {
         @escaping @convention(block) (Bool) -> Void
     ) -> Void
     private typealias SendCommand = @convention(c) (Int, CFDictionary?) -> Bool
+    private typealias GetArtwork = @convention(c) (
+        CFTypeRef?,
+        DispatchQueue,
+        @escaping @convention(block) (CFTypeRef?) -> Void
+    ) -> Void
+    private typealias CopyArtworkData = @convention(c) (CFTypeRef) -> Unmanaged<CFData>?
     private typealias RegisterNotifications = @convention(c) (DispatchQueue) -> Void
     private typealias UnregisterNotifications = @convention(c) () -> Void
 
@@ -219,6 +229,8 @@ final class MediaRemoteBridge: MediaRemoteControlling {
         let handle: UnsafeMutableRawPointer
         let getNowPlayingInfo: GetNowPlayingInfo
         let getIsPlaying: GetIsPlaying
+        let getArtwork: GetArtwork?
+        let copyArtworkData: CopyArtworkData?
         let sendCommand: SendCommand
         let registerNotifications: RegisterNotifications
         let unregisterNotifications: UnregisterNotifications
@@ -267,6 +279,8 @@ final class MediaRemoteBridge: MediaRemoteControlling {
             self.handle = handle
             self.getNowPlayingInfo = getNowPlayingInfo
             self.getIsPlaying = getIsPlaying
+            self.getArtwork = Self.function(handle, named: "MRMediaRemoteGetNowPlayingArtwork")
+            self.copyArtworkData = Self.function(handle, named: "MRNowPlayingArtworkCopyImageData")
             self.sendCommand = sendCommand
             self.registerNotifications = registerNotifications
             self.unregisterNotifications = unregisterNotifications
@@ -304,6 +318,8 @@ final class MediaRemoteBridge: MediaRemoteControlling {
     private var pollingTask: Task<Void, Never>?
     private var didLogAutomationFailure = false
     private var registeredForNotifications = false
+    private var metadataGeneration: UInt?
+    private var pendingArtwork: (generation: UInt, data: Data?)?
 
     private(set) var state: MediaRemoteState = .unavailable
     var onChange: (() -> Void)?
@@ -381,6 +397,9 @@ final class MediaRemoteBridge: MediaRemoteControlling {
     private func refresh() {
         guard let symbols else { return }
         let generation = refreshGeneration.begin()
+        metadataGeneration = nil
+        pendingArtwork = nil
+        readArtwork(using: symbols, generation: generation)
 
         if readStrategy == .automationHost {
             Task { [weak self] in
@@ -394,9 +413,7 @@ final class MediaRemoteBridge: MediaRemoteControlling {
                     return
                 }
                 self.didLogAutomationFailure = false
-                guard updatedState != self.state else { return }
-                self.state = updatedState
-                self.onChange?()
+                self.applyMetadata(updatedState, generation: generation)
             }
             return
         }
@@ -408,12 +425,11 @@ final class MediaRemoteBridge: MediaRemoteControlling {
                       self.refreshGeneration.isCurrent(generation),
                       let symbols = self.symbols
                 else { return }
-                self.state = MediaRemoteMetadataMapper.map(
+                self.applyMetadata(MediaRemoteMetadataMapper.map(
                     information,
                     isPlaying: self.state.isPlaying,
                     keys: symbols.metadataKeys
-                )
-                self.onChange?()
+                ), generation: generation)
             }
         }
 
@@ -425,6 +441,48 @@ final class MediaRemoteBridge: MediaRemoteControlling {
                 self.onChange?()
             }
         }
+    }
+
+    private func readArtwork(using symbols: Symbols, generation: UInt) {
+        guard let getArtwork = symbols.getArtwork,
+              let copyArtworkData = symbols.copyArtworkData
+        else {
+            applyArtwork(nil, generation: generation)
+            return
+        }
+
+        getArtwork(nil, .main) { [weak self] artwork in
+            let data = artwork.flatMap { artwork in
+                copyArtworkData(artwork)?.takeRetainedValue() as Data?
+            }
+            Task { @MainActor [weak self] in
+                self?.applyArtwork(data, generation: generation)
+            }
+        }
+    }
+
+    private func applyMetadata(_ updatedState: MediaRemoteState, generation: UInt) {
+        guard refreshGeneration.isCurrent(generation) else { return }
+        var updatedState = updatedState
+        if let pendingArtwork, pendingArtwork.generation == generation {
+            updatedState.artworkData = pendingArtwork.data
+            self.pendingArtwork = nil
+        }
+        metadataGeneration = generation
+        guard updatedState != state else { return }
+        state = updatedState
+        onChange?()
+    }
+
+    private func applyArtwork(_ artworkData: Data?, generation: UInt) {
+        guard refreshGeneration.isCurrent(generation) else { return }
+        guard metadataGeneration == generation else {
+            pendingArtwork = (generation, artworkData)
+            return
+        }
+        guard state.artworkData != artworkData else { return }
+        state.artworkData = artworkData
+        onChange?()
     }
 
     private func startPolling() {

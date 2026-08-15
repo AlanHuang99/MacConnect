@@ -52,6 +52,34 @@ final class MprisPluginTests: XCTestCase {
         XCTAssertEqual(recorder.packets.last?.body["player"]?.stringValue, "IINA")
     }
 
+    func testMatchingArtworkRequestRoutesToSenderWithoutNormalResponse() async {
+        let packetRecorder = PacketRecorder()
+        let artworkRecorder = ArtworkRecorder()
+        var snapshot = populatedSnapshot
+        snapshot.playerName = "IINA"
+        snapshot.artworkData = Data("cover".utf8)
+        let plugin = MprisPlugin(
+            localController: FakeLocalMediaController(snapshot: snapshot),
+            devices: { [] },
+            pluginEnabled: { _ in true },
+            sendPacket: packetRecorder.record,
+            sendArtwork: artworkRecorder.record
+        )
+        let device = makeDevice(id: "trusted-phone")
+        let url = "kdeconnect://macconnect/album-art/3fa405a8301ace34d11cf44a816080b8f0e49a48fbd048b8aef1543a8c58bdb6"
+
+        await plugin.handle(packet: NetworkPacket(
+            type: PacketType.mprisRequest,
+            body: ["player": .string("IINA"), "albumArtUrl": .string(url)]
+        ), from: device)
+
+        XCTAssertTrue(packetRecorder.packets.isEmpty)
+        XCTAssertEqual(artworkRecorder.transfers, [
+            MprisArtworkTransfer(player: "IINA", url: url, data: Data("cover".utf8))
+        ])
+        XCTAssertEqual(artworkRecorder.deviceIds, ["trusted-phone"])
+    }
+
     func testLocalChangeBroadcastsOnlyToEligibleDevice() {
         let enabled = makeDevice(
             id: "enabled",
@@ -110,6 +138,7 @@ final class MprisPluginTests: XCTestCase {
             title: nil,
             artist: nil,
             album: nil,
+            artworkData: nil,
             isPlaying: false,
             transportAvailable: false,
             volume: nil,
@@ -178,6 +207,7 @@ final class MprisPluginTests: XCTestCase {
             title: "Local Track",
             artist: "Local Artist",
             album: nil,
+            artworkData: nil,
             isPlaying: true,
             transportAvailable: true,
             volume: 35,
@@ -223,6 +253,17 @@ private final class PacketRecorder {
 
     func record(_ packet: NetworkPacket, _ device: Device) {
         packets.append(packet)
+        deviceIds.append(device.id)
+    }
+}
+
+@MainActor
+private final class ArtworkRecorder {
+    private(set) var transfers: [MprisArtworkTransfer] = []
+    private(set) var deviceIds: [String] = []
+
+    func record(_ transfer: MprisArtworkTransfer, _ device: Device) {
+        transfers.append(transfer)
         deviceIds.append(device.id)
     }
 }
