@@ -524,6 +524,7 @@ public final class LanLinkProvider: @unchecked Sendable {
         Log.net.info("Identity from \(identity.deviceName, privacy: .public) (\(identity.deviceId, privacy: .public))")
         let channelKey = ObjectIdentifier(channel)
         var supersededPending: Channel?
+        var supersededIncumbent: Channel?
         var wasAlreadySecured = false
         linkLock.lock()
         if let existing = linksByDeviceId[identity.deviceId] {
@@ -533,7 +534,7 @@ public final class LanLinkProvider: @unchecked Sendable {
             {
                 wasAlreadySecured = securedBeforeIdentity.remove(channelKey) != nil
                 linkLock.unlock()
-            } else {
+            } else if existing.isSecure, existing.activeChannel.isActive {
                 supersededPending = pendingCandidatesByDeviceId[identity.deviceId]?.channel
                 pendingCandidatesByDeviceId[identity.deviceId] = PendingCandidate(
                     channel: channel, identity: identity
@@ -546,6 +547,23 @@ public final class LanLinkProvider: @unchecked Sendable {
                 // and the provider lock is released.
                 supersededPending?.close(promise: nil)
                 Log.net.info("Staged TLS candidate for existing link \(identity.deviceId, privacy: .public)")
+            } else {
+                if let pending = pendingCandidatesByDeviceId.removeValue(forKey: identity.deviceId) {
+                    channelToDeviceId.removeValue(forKey: ObjectIdentifier(pending.channel))
+                    securedBeforeIdentity.remove(ObjectIdentifier(pending.channel))
+                    supersededPending = pending.channel
+                }
+                supersededIncumbent = existing.replaceChannelBeforeTLS(channel)
+                if let supersededIncumbent {
+                    channelToDeviceId.removeValue(forKey: ObjectIdentifier(supersededIncumbent))
+                    securedBeforeIdentity.remove(ObjectIdentifier(supersededIncumbent))
+                }
+                channelToDeviceId[channelKey] = identity.deviceId
+                wasAlreadySecured = securedBeforeIdentity.remove(channelKey) != nil
+                linkLock.unlock()
+                supersededPending?.close(promise: nil)
+                supersededIncumbent?.close(promise: nil)
+                Log.net.info("Replaced unavailable channel for existing link \(identity.deviceId, privacy: .public)")
             }
             Task { @MainActor in
                 _ = DeviceManager.shared.upsert(identity: identity)
@@ -568,13 +586,10 @@ public final class LanLinkProvider: @unchecked Sendable {
                     provider?.dispatch(packet, deviceId: identity.deviceId)
                 }
             },
-            onClose: { [weak self] in
+            onClose: { [weak self] closedLink in
                 let provider = self
-                provider?.linkLock.lock()
-                provider?.linksByDeviceId.removeValue(forKey: identity.deviceId)
-                provider?.linkLock.unlock()
                 Task { @MainActor in
-                    DeviceManager.shared.detach(deviceId: identity.deviceId)
+                    provider?.detachIfStillClosed(link: closedLink, deviceId: identity.deviceId)
                 }
             }
         )
@@ -591,7 +606,21 @@ public final class LanLinkProvider: @unchecked Sendable {
         }
     }
 
-    private func handlePacket(_ packet: NetworkPacket, channel: Channel) {
+    @MainActor
+    private func detachIfStillClosed(link closedLink: LanLink, deviceId: String) {
+        // `handleClosed` removes this generation before notifying. Keep the
+        // provider lock through the identity check and detach so a new
+        // generation cannot register between them.
+        linkLock.lock()
+        let hasReplacement = linksByDeviceId[deviceId] != nil
+        let deviceStillHasClosedLink = DeviceManager.shared.devices[deviceId]?.link === closedLink
+        if !hasReplacement, deviceStillHasClosedLink {
+            DeviceManager.shared.detach(deviceId: deviceId)
+        }
+        linkLock.unlock()
+    }
+
+    func handlePacket(_ packet: NetworkPacket, channel: Channel) {
         linkLock.lock()
         let deviceId = channelToDeviceId[ObjectIdentifier(channel)]
         let link = deviceId.flatMap { linksByDeviceId[$0] }

@@ -8,13 +8,13 @@ public final class LanLink: @unchecked Sendable {
     private var _isSecure: Bool = false
     private var channel: Channel
     private let onPacketCallback: @Sendable (NetworkPacket) -> Void
-    private let onCloseCallback: @Sendable () -> Void
+    private let onCloseCallback: @Sendable (LanLink) -> Void
 
     public init(
         deviceId: String,
         channel: Channel,
         onPacket: @escaping @Sendable (NetworkPacket) -> Void,
-        onClose: @escaping @Sendable () -> Void
+        onClose: @escaping @Sendable (LanLink) -> Void
     ) {
         self.deviceId = deviceId
         self.channel = channel
@@ -76,6 +76,20 @@ public final class LanLink: @unchecked Sendable {
         return previous === candidate ? nil : previous
     }
 
+    /// Replace an incumbent that cannot carry secure traffic and reset the
+    /// link to its pre-TLS state. The provider removes the old channel's map
+    /// entry under its generation lock, then closes the returned channel only
+    /// after releasing that lock.
+    @discardableResult
+    public func replaceChannelBeforeTLS(_ candidate: Channel) -> Channel? {
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = channel
+        channel = candidate
+        _isSecure = false
+        return previous === candidate ? nil : previous
+    }
+
     public func deliverPacket(_ packet: NetworkPacket) {
         // Defence in depth: a peer (e.g. a future MacConnect build) may
         // still send `_keepalive: true` pings; drop them before plugin
@@ -91,7 +105,7 @@ public final class LanLink: @unchecked Sendable {
     }
 
     public func notifyClosed() {
-        onCloseCallback()
+        onCloseCallback(self)
     }
 
     public func disconnect() {

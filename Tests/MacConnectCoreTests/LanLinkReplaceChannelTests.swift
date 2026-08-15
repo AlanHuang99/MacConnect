@@ -12,7 +12,7 @@ final class LanLinkReplaceChannelTests: XCTestCase {
     }
 
     private func makeLink(channel: Channel) -> LanLink {
-        LanLink(deviceId: "dev1", channel: channel, onPacket: { _ in }, onClose: {})
+        LanLink(deviceId: "dev1", channel: channel, onPacket: { _ in }, onClose: { _ in })
     }
 
     func testPromotingSecuredCandidateReturnsActiveChannelWithoutClosingIt() throws {
@@ -52,6 +52,39 @@ final class LanLinkReplaceChannelTests: XCTestCase {
         XCTAssertFalse(link.markSecured(channel: current))
         XCTAssertTrue(link.activeChannel === candidate)
         XCTAssertTrue(link.isSecure)
+
+        _ = try? current.finish()
+        _ = try? candidate.finish()
+    }
+
+    func testInsecureIncumbentIsReplacedBeforeCandidateTLS() throws {
+        let current = try makeActiveChannel()
+        let candidate = try makeActiveChannel()
+        let link = makeLink(channel: current)
+
+        let previous = link.replaceChannelBeforeTLS(candidate)
+
+        XCTAssertTrue(previous === current)
+        XCTAssertTrue(current.isActive, "the provider must defer incumbent closure")
+        XCTAssertTrue(link.activeChannel === candidate)
+        XCTAssertFalse(link.isSecure)
+
+        _ = try? current.finish()
+        _ = try? candidate.finish()
+    }
+
+    func testInactiveSecureIncumbentIsReplacedBeforeCandidateTLS() throws {
+        let current = try makeActiveChannel()
+        let candidate = try makeActiveChannel()
+        let link = makeLink(channel: current)
+        link.isSecure = true
+        try current.close().wait()
+
+        let previous = link.replaceChannelBeforeTLS(candidate)
+
+        XCTAssertTrue(previous === current)
+        XCTAssertTrue(link.activeChannel === candidate)
+        XCTAssertFalse(link.isSecure)
 
         _ = try? current.finish()
         _ = try? candidate.finish()
