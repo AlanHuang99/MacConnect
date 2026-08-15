@@ -5,7 +5,7 @@ Release target: v0.4.2
 
 ## Goal
 
-Make media control strictly Android to Mac, keep the Android play/pause button synchronized with the Mac's actual playback state, and make the same controls reliable on both the Redmi K60 and Note12.
+Make media control strictly Android to Mac, keep the Android play/pause button synchronized with the Mac's actual playback state, show the current Mac track artwork in Android's multimedia screen when macOS provides it, and make the same controls reliable on both the Redmi K60 and Note12.
 
 ## Confirmed runtime evidence
 
@@ -30,7 +30,9 @@ The evidence supports a stale Android controller binding caused by repeated link
 - Keep an active secure same-device channel when a duplicate candidate arrives. Reject and close the candidate before TLS instead of replacing the active link.
 - Continue sending the elected Mac player list and state when Android connects or requests it.
 - Continue broadcasting each real Mac playback-state change to every paired, reachable, MPRIS-enabled Android controller.
+- Advertise native MPRIS album-art payload support, include a stable `kdeconnect://` artwork URL in Mac state, and transfer only the matching current artwork when Android requests it.
 - Verify play, pause, previous, next, system volume, and button-state changes on both phones.
+- Verify the Android music-note placeholder changes to the current Mac track cover on both phones when artwork is available, and falls back cleanly when it is not.
 - Publish the result as v0.4.2 after local, hardware, pull-request, main-branch, signing, notarization, release-asset, and appcast verification.
 
 ## Non-goals
@@ -38,7 +40,8 @@ The evidence supports a stale Android controller binding caused by repeated link
 - Changing or rebuilding KDE Connect Android.
 - Adding a Mac media-app picker or enumerating simultaneous Mac media sessions.
 - Optimistically changing Android playback state before the Mac reports the actual state.
-- Adding seek, queue, playlist, album-art transfer, or track-selection features.
+- Adding seek, queue, playlist, or track-selection features.
+- Adding an HTTP server, external artwork lookup, artwork scraping, or Android application changes.
 - Removing unrelated Mac-to-phone functions such as file sending, clipboard push, ping, or Find My Phone.
 - Changing the Android system-volume protocol. Android remains able to control the Mac's current output volume and mute state.
 - Repairing unrelated discovery-listener diagnostics unless the focused channel-stability change fails to restore Note12 control.
@@ -57,6 +60,18 @@ The evidence supports a stale Android controller binding caused by repeated link
 8. `MprisPlugin` broadcasts that state to every eligible phone, which makes each Android play/pause button render the correct icon.
 
 Incoming `kdeconnect.mpris` phone-player state is no longer advertised, stored, queried, or shown on the Mac.
+
+### Mac artwork to Android
+
+1. `MediaRemoteBridge` obtains the current artwork bytes using MediaRemote's artwork callback in addition to the existing metadata read.
+2. `SystemLocalMediaController` exposes the optional bytes with the local snapshot.
+3. `LocalMprisService` derives a stable content-addressed `kdeconnect://macconnect/album-art/...` URL, advertises `supportAlbumArtPayload: true`, and includes `albumArtUrl` only when valid artwork is available.
+4. KDE Connect Android displays its existing placeholder immediately, then requests the advertised URL through `kdeconnect.mpris.request` if it is not cached.
+5. `MprisPlugin` accepts an artwork request only when its player and URL exactly match the current snapshot.
+6. The existing TLS payload transport sends a temporary, bounded artwork file in a `kdeconnect.mpris` packet marked `transferringAlbumArt: true`.
+7. Android caches and renders the image. The temporary Mac file is removed after success, failure, or a failed control-packet send.
+
+Artwork remains strictly Mac to Android state. It does not restore phone-media state or controls on the Mac. Payloads are capped at 5 MiB to match KDE Connect's cache boundary, empty or oversized images are omitted, and a track without artwork continues using Android's music-note placeholder.
 
 ### Duplicate channel policy
 
@@ -79,11 +94,16 @@ The Android UI is unchanged. Its existing central control renders:
 - a play triangle when MacConnect reports `isPlaying: false`, including paused or stopped state;
 - pause bars when MacConnect reports `isPlaying: true`.
 
+Its existing cover surface renders the current Mac track artwork after the native KDE Connect payload arrives. Until then, or when macOS supplies no valid artwork, it keeps the existing music-note placeholder.
+
 ## Error handling and recovery
 
 - Requests for an unknown player continue returning the current player list without executing a command.
 - Malformed actions and volume values remain no-ops or are clamped by the existing service behavior.
 - A phone that does not advertise the controller capabilities receives no local media state.
+- An artwork request for a stale player or URL is ignored, preventing a previous track's cover from being sent after the song changes.
+- Empty, unreadable, or larger-than-5-MiB artwork is omitted and never opens a payload listener.
+- A failed artwork control-packet send aborts the one-shot payload listener and removes its temporary file.
 - A rejected duplicate channel has no provider mapping, so its close callback cannot detach the active device.
 - A current channel that is inactive or not yet secure can still be replaced immediately.
 - Battery-capable Android phones remain probed after quiet periods. Peers without battery use the established announcement and hard-TTL recovery path.
@@ -96,12 +116,15 @@ Test-first changes will cover:
 - Android requests still receive the Mac player list and state;
 - incoming phone-player state produces no cache or follow-up request;
 - a Mac state change is sent to two eligible phones and contains the new `isPlaying` value;
+- artwork data produces a stable allowed-scheme `albumArtUrl`, while absent or oversized data produces no URL;
+- only a request matching the current player and artwork URL creates a bounded native album-art transfer packet;
+- artwork acquisition failures leave media transport and metadata available;
 - MPRIS is no longer selected or sent as a liveness probe;
 - a secure active `LanLink` rejects a duplicate candidate without changing the active channel or secure flag;
 - insecure and inactive links still adopt replacement candidates;
 - provider closures remain outside the provider lock.
 
-Hardware verification will use both authorized Wi-Fi ADB devices. Each phone must independently issue play, pause, previous, next, and volume operations. After each playback transition, both phones must show the same player and the correct central play/pause icon. Mac logs must show commands from both device names without five-second secure-link replacement churn.
+Hardware verification will use both authorized Wi-Fi ADB devices. Each phone must independently issue play, pause, previous, next, and volume operations. After each playback transition, both phones must show the same player and the correct central play/pause icon. With a track that exposes artwork, both phones must replace the music-note placeholder with the same cover. Mac logs must show commands from both device names without five-second secure-link replacement churn.
 
 ## Release
 

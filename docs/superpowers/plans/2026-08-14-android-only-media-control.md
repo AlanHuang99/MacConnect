@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make media control strictly Android to Mac, restore reliable Note12 commands, synchronize the play/pause icon on both phones, and publish v0.4.2.
+**Goal:** Make media control strictly Android to Mac, restore reliable Note12 commands, synchronize the play/pause icon, deliver the current Mac track cover to both phones, and publish v0.4.2.
 
-**Architecture:** Reduce `MprisPlugin` to the controlled side of the KDE Connect protocol: receive Android requests and send Mac state. Remove the reverse Mac controller UI, cache, requests, and liveness probe. Stabilize Android controller instances by rejecting duplicate candidate channels while an active secure channel already exists, while retaining replacement for insecure or inactive links.
+**Architecture:** Reduce `MprisPlugin` to the controlled side of the KDE Connect protocol: receive Android requests and send Mac state. Remove the reverse Mac controller UI, cache, requests, and liveness probe. Stabilize Android controller instances by rejecting duplicate candidate channels while an active secure channel already exists, while retaining replacement for insecure or inactive links. Add optional Mac-to-Android cover state through the existing KDE Connect MPRIS album-art request and TLS payload mechanisms, with exact-current-art validation and no new service.
 
 **Tech Stack:** Swift 5.9, Swift Package Manager, SwiftUI, XCTest, SwiftNIO EmbeddedChannel, KDE Connect MPRIS protocol, macOS MediaRemote and Core Audio, ADB Wi-Fi debugging, GitHub Actions, Developer ID/notarization, Sparkle appcast.
 
@@ -13,8 +13,11 @@
 - Media control is Android to Mac only.
 - Do not add a Mac media-app picker or enumerate simultaneous Mac media sessions.
 - The Android central button must show play for `isPlaying: false` and pause for `isPlaying: true` based on actual Mac state.
+- When macOS exposes valid current artwork, Android's existing multimedia cover surface must replace its music-note placeholder with that image.
 - Keep Play, Pause, PlayPause, Previous, Next, Mac output volume, and mute behavior.
-- Do not change the Android application or introduce a new packet type, process, dependency, or permission.
+- Do not change the Android application or introduce a new packet type, server process, dependency, or permission.
+- Use KDE Connect's existing `albumArtUrl`, `supportAlbumArtPayload`, and `transferringAlbumArt` fields plus the existing TLS payload transport. Do not add an HTTP server or external artwork lookup.
+- Ignore stale, empty, or larger-than-5-MiB artwork and clean up every temporary transfer file.
 - Preserve unrelated Mac-to-phone functions such as file sending, clipboard push, ping, and Find My Phone.
 - Add focused failing tests before each production change.
 - Never claim a hardware, CI, signing, notarization, or release result without fresh evidence.
@@ -257,7 +260,91 @@ Expected: all pass.
 
 ---
 
-### Task 4: Document v0.4.2 and validate the source tree
+### Task 4: Send current Mac track artwork to Android
+
+**Files:**
+
+- Modify: `Tests/MacConnectCoreTests/SystemMediaBridgeTests.swift`
+- Modify: `Tests/MacConnectCoreTests/LocalMprisServiceTests.swift`
+- Modify: `Tests/MacConnectCoreTests/MprisPluginTests.swift`
+- Add: `Tests/MacConnectCoreTests/MprisArtworkPayloadSenderTests.swift`
+- Modify: `Sources/MacConnectCore/Plugin/MediaRemoteBridge.swift`
+- Modify: `Sources/MacConnectCore/Plugin/LocalMediaController.swift`
+- Modify: `Sources/MacConnectCore/Plugin/LocalMprisService.swift`
+- Modify: `Sources/MacConnectCore/Plugin/MprisPlugin.swift`
+- Add: `Sources/MacConnectCore/Plugin/MprisArtworkPayloadSender.swift`
+
+**Interfaces:**
+
+- Produces: optional artwork bytes in `MediaRemoteState` and `LocalMediaSnapshot`; a stable content-addressed `kdeconnect://macconnect/album-art/...` URL; `supportAlbumArtPayload: true`; exact-current `LocalMprisService.artworkTransfer(for:)`; and a native TLS payload transfer packet.
+- Consumes: `MRMediaRemoteGetNowPlayingArtwork`, `MRNowPlayingArtworkCopyImageData`, incoming Android `albumArtUrl` requests, `PayloadTransport.startSender`, and the requesting `Device`'s trusted identity.
+
+- [ ] **Step 1: Write failing artwork state and request-validation tests**
+
+Extend test fixtures with optional artwork bytes. Require:
+
+- valid non-empty artwork at or below 5 MiB produces a stable `albumArtUrl` with the `kdeconnect` scheme in current state;
+- the player-list packet advertises `supportAlbumArtPayload: true`;
+- no artwork and artwork over 5 MiB omit `albumArtUrl`;
+- `artworkTransfer(for:)` succeeds only when packet type, player, and URL exactly match the current snapshot;
+- a stale URL, wrong player, or ordinary media request yields no artwork transfer;
+- `MprisPlugin.handle` routes a matching request to the injected artwork sender and does not emit a normal state response.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+Run:
+
+```bash
+swift test --filter LocalMprisServiceTests
+swift test --filter MprisPluginTests
+swift test --filter SystemMediaBridgeTests
+```
+
+Expected: compile failures because artwork fields, URL generation, transfer validation, and artwork sender injection do not exist.
+
+- [ ] **Step 3: Acquire artwork without weakening media availability**
+
+Load `MRMediaRemoteGetNowPlayingArtwork` and `MRNowPlayingArtworkCopyImageData` as optional symbols. Add an asynchronous artwork read whose failure returns `nil` and never makes transport or metadata unavailable. Merge the result under the existing refresh-generation guard so a late callback cannot overwrite a newer song. Expose the optional data through `SystemLocalMediaController`.
+
+Keep artwork symbols optional so older supported macOS versions continue receiving transport and metadata even if artwork APIs are absent.
+
+- [ ] **Step 4: Serialize and validate native KDE Connect artwork state**
+
+Use SHA-256 of the artwork bytes for a stable URL-safe identifier. Include `albumArtUrl` only for non-empty data no larger than 5 MiB, and set `supportAlbumArtPayload: true` in player lists. Add `LocalMprisService.artworkTransfer(for:)` that requires the current player and exact current URL before exposing the bytes.
+
+In `MprisPlugin.handle`, route a valid artwork request to an injected artwork sender before ordinary request handling, then return.
+
+- [ ] **Step 5: Send a bounded TLS artwork payload and clean up**
+
+`MprisArtworkPayloadSender` writes the validated bytes to a unique temporary file, opens the existing one-shot TLS payload sender, and sends a `PacketType.mpris` packet with:
+
+```swift
+[
+    "player": .string(transfer.player),
+    "transferringAlbumArt": .bool(true),
+    "albumArtUrl": .string(transfer.url)
+]
+```
+
+Set `payloadSize` and `payloadTransferInfo.port`. Remove the temporary file after completion, failure, bind failure, or a failed control-packet send. Add focused packet-construction and cleanup tests through injected file/transport seams rather than opening a real listener in unit tests.
+
+- [ ] **Step 6: Run focused and complete tests**
+
+Run:
+
+```bash
+swift test --filter SystemMediaBridgeTests
+swift test --filter LocalMprisServiceTests
+swift test --filter MprisPluginTests
+swift test --filter MprisArtworkPayloadSenderTests
+swift test
+```
+
+Expected: all pass.
+
+---
+
+### Task 5: Document v0.4.2 and validate the source tree
 
 **Files:**
 
@@ -272,7 +359,8 @@ Add a v0.4.2 changelog entry dated 2026-08-14 with:
 
 - Android-only media direction and removal of the Mac phone-player tile;
 - stable duplicate-channel handling that restores Note12 commands;
-- synchronized play/pause button state across connected phones.
+- synchronized play/pause button state across connected phones;
+- native current-track artwork in Android's multimedia cover surface when macOS provides it.
 
 Advance comparison links from v0.4.1 to v0.4.2.
 
@@ -293,7 +381,7 @@ Also assemble the universal direct v0.4.2 app, verify arm64 and x86_64 slices, i
 
 ---
 
-### Task 5: Verify both Android phones end to end
+### Task 6: Verify both Android phones end to end
 
 **Files:**
 
@@ -330,13 +418,17 @@ Require Mac logs to show MPRIS requests from both `Redmi K60` and the Note12 pee
 
 After play from either phone, dump both UI hierarchies and require `play_button` to describe/render Pause. After pause, require both to describe/render Play. Confirm both still show the same elected Mac player and current track.
 
-- [ ] **Step 5: Restore the installed app state**
+- [ ] **Step 5: Verify current-track artwork on both phones**
+
+Choose a Mac track whose MediaRemote state exposes artwork. Open Multimedia control on both phones, require the music-note placeholder to be replaced by an image, and capture both screens. Change to a different-artwork track and require both images to update. Exercise a no-artwork item and require a clean placeholder fallback. Confirm logs show a bounded `transferringAlbumArt` payload request from each phone without repeated transfers for the same cached URL.
+
+- [ ] **Step 6: Restore the installed app state**
 
 After validation, leave the tested v0.4.2 build running or install the public release once it is available. Preserve the existing v0.4.1 app recoverably until the public artifact is verified.
 
 ---
 
-### Task 6: Publish and verify v0.4.2
+### Task 7: Publish and verify v0.4.2
 
 **Files:**
 
