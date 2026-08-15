@@ -8,13 +8,13 @@ public final class LanLink: @unchecked Sendable {
     private var _isSecure: Bool = false
     private var channel: Channel
     private let onPacketCallback: @Sendable (NetworkPacket) -> Void
-    private let onCloseCallback: @Sendable () -> Void
+    private let onCloseCallback: @Sendable (LanLink) -> Void
 
     public init(
         deviceId: String,
         channel: Channel,
         onPacket: @escaping @Sendable (NetworkPacket) -> Void,
-        onClose: @escaping @Sendable () -> Void
+        onClose: @escaping @Sendable (LanLink) -> Void
     ) {
         self.deviceId = deviceId
         self.channel = channel
@@ -47,35 +47,47 @@ public final class LanLink: @unchecked Sendable {
         return channel
     }
 
-    /// Replace the active channel with a newer connection and return the
-    /// superseded channel for the caller to close (or `nil` if unchanged).
-    /// The old channel is intentionally NOT closed here — see below.
-    ///
-    /// `_isSecure` is reset to `false` because the new channel has not
-    /// completed its TLS handshake yet. Without this reset, `send()`
-    /// would happily write to the new channel during the ~50–100 ms
-    /// pre-handshake window; NIOSSL would buffer the plaintext and
-    /// silently drop it if the new channel never reaches handshake (the
-    /// observed cause of intermittent "send file" failures with peers
-    /// like the KDE Connect iOS app that cycle TCP every 5 s). The
-    /// flag flips back to `true` when LanLinkProvider.handleSecured
-    /// fires for the new channel.
-    ///
-    /// Why the close is deferred to the caller: the caller
-    /// (`LanLinkProvider.handleIdentity`) holds `linkLock` while replacing
-    /// the channel, and `Channel.close` can run synchronously on the calling
-    /// event-loop thread — firing `channelInactive` → `onClose` →
-    /// `handleClosed`, which takes that same non-recursive `linkLock`.
-    /// Closing inline therefore self-deadlocks the discovery queue. The
-    /// caller closes the returned channel only after releasing `linkLock`.
+    /// Mark `candidate` secure only if it is still this link's active channel.
+    /// A late TLS callback from a superseded channel must not mutate the link.
     @discardableResult
-    public func replaceChannel(with newChannel: Channel) -> Channel? {
+    public func markSecured(channel candidate: Channel) -> Bool {
         lock.lock()
-        let old = channel
-        channel = newChannel
+        defer { lock.unlock() }
+        guard channel === candidate else { return false }
+        _isSecure = true
+        return true
+    }
+
+    /// Atomically promote an already-secured candidate and return the
+    /// superseded active channel for deferred closure by the provider.
+    ///
+    /// The candidate is never installed before TLS completes, so concurrent
+    /// sends continue using the old secure channel throughout the handshake.
+    /// The returned channel is intentionally left open: the provider holds its
+    /// own state lock while calling this method, and a synchronous close can
+    /// re-enter the provider through `channelInactive`.
+    @discardableResult
+    public func promoteSecuredChannel(_ candidate: Channel) -> Channel? {
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = channel
+        channel = candidate
+        _isSecure = true
+        return previous === candidate ? nil : previous
+    }
+
+    /// Replace an incumbent that cannot carry secure traffic and reset the
+    /// link to its pre-TLS state. The provider removes the old channel's map
+    /// entry under its generation lock, then closes the returned channel only
+    /// after releasing that lock.
+    @discardableResult
+    public func replaceChannelBeforeTLS(_ candidate: Channel) -> Channel? {
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = channel
+        channel = candidate
         _isSecure = false
-        lock.unlock()
-        return old !== newChannel ? old : nil
+        return previous === candidate ? nil : previous
     }
 
     public func deliverPacket(_ packet: NetworkPacket) {
@@ -93,7 +105,7 @@ public final class LanLink: @unchecked Sendable {
     }
 
     public func notifyClosed() {
-        onCloseCallback()
+        onCloseCallback(self)
     }
 
     public func disconnect() {

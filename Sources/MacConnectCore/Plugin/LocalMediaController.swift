@@ -5,6 +5,7 @@ struct LocalMediaSnapshot: Equatable {
     var title: String?
     var artist: String?
     var album: String?
+    var artworkData: Data?
     var isPlaying: Bool
     var transportAvailable: Bool
     var volume: Int?
@@ -31,6 +32,7 @@ final class UnavailableLocalMediaController: LocalMediaControlling {
         title: nil,
         artist: nil,
         album: nil,
+        artworkData: nil,
         isPlaying: false,
         transportAvailable: false,
         volume: nil,
@@ -64,6 +66,7 @@ final class SystemLocalMediaController: LocalMediaControlling {
             title: media.title,
             artist: media.artist,
             album: media.album,
+            artworkData: media.artworkData,
             isPlaying: media.isPlaying,
             transportAvailable: media.isAvailable,
             volume: volumeController.volume,

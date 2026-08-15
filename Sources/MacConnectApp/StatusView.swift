@@ -44,7 +44,7 @@ struct StatusView: View {
         .frame(width: 360, height: 500)
         .animation(.easeInOut(duration: 0.18), value: transfers.toast?.id)
         .animation(.easeInOut(duration: 0.12), value: showingSettings)
-        .onAppear(perform: requestNowPlayingFromPeers)
+        .onAppear(perform: requestBatteryFromPeers)
     }
 
     /// Always-visible confirmation that a send/receive completed, even
@@ -86,18 +86,10 @@ struct StatusView: View {
         )
     }
 
-    /// Ask paired-and-online peers to push their current MPRIS / battery
-    /// state so tiles aren't blank on first popover open. Both calls are
-    /// gated on the per-device + global plugin enable state — without that
-    /// gate we'd send unsolicited plugin traffic to peers the user
-    /// explicitly muted for those plugins, contradicting the per-device
-    /// override settings.
-    private func requestNowPlayingFromPeers() {
+    /// Ask paired-and-online peers to push their current battery state.
+    private func requestBatteryFromPeers() {
         for device in manager.deviceList() where device.isPaired && device.isReachable {
             let id = device.id
-            if MacConnectCore.Settings.shared.isPluginEnabled("mpris", forDevice: id) {
-                MprisPlugin.requestNowPlaying(from: device)
-            }
             if MacConnectCore.Settings.shared.isPluginEnabled("battery", forDevice: id) {
                 BatteryPlugin.requestUpdate(from: device)
             }
@@ -187,7 +179,6 @@ struct StatusView: View {
 struct DeviceRow: View {
     @ObservedObject var device: Device
     @ObservedObject private var transfers = TransferStore.shared
-    @ObservedObject private var mpris = MprisStore.shared
     @ObservedObject private var battery = BatteryStore.shared
     @State private var isDropTarget: Bool = false
 
@@ -209,10 +200,6 @@ struct DeviceRow: View {
                 pairPrompt
             } else if !device.isPaired {
                 unpairedActions
-            }
-
-            if device.isPaired, device.isReachable, let mprisState = mpris.state(for: device.id) {
-                mprisTile(mprisState)
             }
 
             ForEach(transfers.activeTransfers(forDeviceId: device.id)) { transfer in
@@ -300,43 +287,6 @@ struct DeviceRow: View {
         } else {
             Color.clear
         }
-    }
-
-    private func mprisTile(_ state: MprisStore.State) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            if let line = state.titleLine {
-                Text(line)
-                    .font(.caption.weight(.medium))
-                    .lineLimit(1)
-                    .truncationMode(.tail)
-            }
-            HStack(spacing: 4) {
-                Text(state.player)
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                Spacer()
-                Button { MprisPlugin.previous(device) } label: {
-                    Image(systemName: "backward.fill")
-                }
-                .disabled(!state.canGoPrevious)
-                Button { MprisPlugin.playPause(device) } label: {
-                    Image(systemName: state.isPlaying ? "pause.fill" : "play.fill")
-                }
-                .disabled(state.isPlaying ? !state.canPause : !state.canPlay)
-                Button { MprisPlugin.next(device) } label: {
-                    Image(systemName: "forward.fill")
-                }
-                .disabled(!state.canGoNext)
-            }
-            .controlSize(.small)
-            .buttonStyle(.borderless)
-            if let volume = state.volume, volume >= 0 {
-                RemoteVolumeSlider(device: device, volume: volume)
-                    .id(state.player)
-            }
-        }
-        .padding(8)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 6))
     }
 
     private func transferRow(_ transfer: TransferStore.Transfer) -> some View {
@@ -578,42 +528,5 @@ struct DeviceRow: View {
             }
         }
         .controlSize(.small)
-    }
-}
-
-private struct RemoteVolumeSlider: View {
-    let device: Device
-    let volume: Int
-
-    @State private var draft: Double
-    @State private var isEditing = false
-
-    init(device: Device, volume: Int) {
-        self.device = device
-        self.volume = volume
-        _draft = State(initialValue: Double(volume))
-    }
-
-    var body: some View {
-        HStack(spacing: 6) {
-            Image(systemName: "speaker.fill")
-                .font(.caption2)
-                .foregroundStyle(.secondary)
-            Slider(
-                value: $draft,
-                in: 0 ... 100,
-                onEditingChanged: { editing in
-                    isEditing = editing
-                    if !editing {
-                        MprisPlugin.setVolume(Int(draft.rounded()), for: device)
-                    }
-                }
-            )
-            .controlSize(.small)
-            .accessibilityLabel(Text("Media volume", bundle: .module))
-        }
-        .onChange(of: volume) { newValue in
-            if !isEditing { draft = Double(newValue) }
-        }
     }
 }

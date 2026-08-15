@@ -1,6 +1,7 @@
 @testable import MacConnectCore
 import Network
 import NIOCore
+import NIOEmbedded
 import NIOPosix
 import NIOSSL
 import XCTest
@@ -16,7 +17,8 @@ import XCTest
 /// What this covers that the pure-decision tests cannot: the full wiring
 /// from a UDP announcement through `dialOnQueue` / `handleIdentity` /
 /// `handleSecured` into `DeviceManager`, the reconciler's `.redial` path
-/// replacing a live channel without an offline flap, the `.drop` path
+/// promoting a secured candidate without an offline flap, the
+/// `.drop` path
 /// tearing the link down and the next announcement re-establishing it, and
 /// the stale-host path dropping a link whose address went quiet.
 ///
@@ -59,12 +61,12 @@ final class LanLinkHarnessTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func peerIdentity() -> IdentityPayload {
+    private func peerIdentity(name: String = "harness-peer") -> IdentityPayload {
         // MacConnect-symmetric receiver caps: un-probeable by design, the
         // exact shape that made two Macs invisible to the 0.3.6 reconciler.
         IdentityPayload(
             deviceId: peerId,
-            deviceName: "harness-peer",
+            deviceName: name,
             deviceType: .desktop,
             protocolVersion: 7,
             tcpPort: Int(fakePeer.port),
@@ -116,13 +118,32 @@ final class LanLinkHarnessTests: XCTestCase {
         XCTAssertEqual(fakePeer.connectionsAccepted, 1)
     }
 
+    private func makeActiveEmbeddedChannel(
+        onInactive: (@Sendable (Channel) -> Void)? = nil
+    ) throws -> EmbeddedChannel {
+        let channel = EmbeddedChannel()
+        if let onInactive {
+            try channel.pipeline.addHandler(ReentrantCloseHandler(onInactive: onInactive)).wait()
+        }
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1716)).wait()
+        return channel
+    }
+
+    @MainActor
+    private func registerSecuredLink(channel: Channel) async throws {
+        provider.handleIdentity(peerIdentity(), channel: channel)
+        provider.handleSecured(channel: channel)
+        try await waitUntil("direct link to attach") {
+            self.device()?.isReachable == true && self.device()?.link?.isSecure == true
+        }
+    }
+
     // MARK: - Tests
 
     /// THE regression: a paired, un-probeable peer whose TCP link went
     /// silent past the hard TTL while it kept announcing must get its link
-    /// re-dialed and replaced in place — device never flaps offline, and
-    /// the peer sees a fresh connection. Before the fix the reconciler
-    /// returned `.keep` forever and nothing ever re-dialed.
+    /// re-dialed and replaced only after the candidate completes TLS: device
+    /// never flaps offline, and the peer sees a fresh secure connection.
     @MainActor
     func testQuietLinkToAnnouncingPeerIsRedialedInPlace() async throws {
         try await establishLink()
@@ -135,15 +156,242 @@ final class LanLinkHarnessTests: XCTestCase {
         try announce(now: shifted)
         DeviceManager.shared.reconcile(now: shifted)
 
-        try await waitUntil("re-dial to replace the channel") {
+        try await waitUntil("secured candidate promotion") {
             self.fakePeer.connectionsAccepted == 2
                 && self.device()?.link?.isSecure == true
                 && self.device()?.link?.activeChannel !== oldChannel
         }
+        XCTAssertFalse(oldChannel.isActive, "the superseded active channel must close after promotion")
         XCTAssertEqual(
             device()?.isReachable, true,
             "an announcing peer must never flap offline during the in-place re-dial"
         )
+    }
+
+    @MainActor
+    func testPendingCandidateCloseLeavesActiveLinkSecureSendableAndAttached() async throws {
+        let current = try makeActiveEmbeddedChannel()
+        let candidate = try makeActiveEmbeddedChannel()
+        try await registerSecuredLink(channel: current)
+
+        provider.handleIdentity(peerIdentity(name: "fresh-harness-peer"), channel: candidate)
+        try await waitUntil("staged identity freshness update") {
+            self.device()?.name == "fresh-harness-peer"
+        }
+
+        XCTAssertTrue(device()?.link?.activeChannel === current)
+        XCTAssertEqual(device()?.link?.isSecure, true)
+        XCTAssertEqual(
+            device()?.send(NetworkPacket(type: PacketType.ping, body: ["message": .string("still-active")])),
+            true
+        )
+
+        provider.handleClosed(channel: candidate)
+
+        XCTAssertTrue(device()?.link?.activeChannel === current)
+        XCTAssertEqual(device()?.link?.isSecure, true)
+        XCTAssertEqual(device()?.isReachable, true)
+
+        provider.handleClosed(channel: current)
+        _ = try? candidate.finish()
+        _ = try? current.finish()
+    }
+
+    @MainActor
+    func testOnlyLatestSecuredCandidatePromotesAndLateClosesCannotDetachIt() async throws {
+        let current = try makeActiveEmbeddedChannel()
+        let older = try makeActiveEmbeddedChannel()
+        let newest = try makeActiveEmbeddedChannel()
+        try await registerSecuredLink(channel: current)
+
+        provider.handleIdentity(peerIdentity(), channel: older)
+        provider.handleIdentity(peerIdentity(), channel: newest)
+
+        XCTAssertTrue(device()?.link?.activeChannel === current)
+        XCTAssertEqual(device()?.link?.isSecure, true)
+        XCTAssertFalse(older.isActive, "a newer pending candidate must close the older pending candidate")
+
+        provider.handleSecured(channel: older)
+        XCTAssertTrue(device()?.link?.activeChannel === current)
+
+        provider.handleSecured(channel: newest)
+        XCTAssertTrue(device()?.link?.activeChannel === newest)
+        XCTAssertEqual(device()?.link?.isSecure, true)
+        XCTAssertFalse(current.isActive, "the prior active channel must close after secured promotion")
+
+        provider.handleClosed(channel: older)
+        provider.handleClosed(channel: current)
+        XCTAssertTrue(device()?.link?.activeChannel === newest)
+        XCTAssertEqual(device()?.isReachable, true)
+
+        provider.handleClosed(channel: newest)
+        _ = try? older.finish()
+        _ = try? current.finish()
+        _ = try? newest.finish()
+    }
+
+    @MainActor
+    func testInsecureIncumbentIsReplacedAndDelayedCloseCannotDiscardCandidate() async throws {
+        let current = try makeActiveEmbeddedChannel()
+        let candidate = try makeActiveEmbeddedChannel()
+
+        provider.handleIdentity(peerIdentity(name: "insecure-incumbent"), channel: current)
+        provider.handleIdentity(peerIdentity(name: "replacement-candidate"), channel: candidate)
+
+        XCTAssertFalse(current.isActive, "an insecure incumbent must be replaced immediately")
+        XCTAssertTrue(candidate.isActive)
+
+        provider.handleClosed(channel: current)
+        provider.handleSecured(channel: candidate)
+        try await waitUntil("replacement candidate to attach") {
+            self.device()?.link?.activeChannel === candidate
+                && self.device()?.link?.isSecure == true
+                && self.device()?.name == "replacement-candidate"
+        }
+
+        provider.handleClosed(channel: candidate)
+        _ = try? current.finish()
+        _ = try? candidate.finish()
+    }
+
+    @MainActor
+    func testInactiveIncumbentReplacementSurvivesDelayedOldClose() async throws {
+        let current = try makeActiveEmbeddedChannel()
+        let candidate = try makeActiveEmbeddedChannel()
+        try await registerSecuredLink(channel: current)
+        current.close(promise: nil)
+        XCTAssertFalse(current.isActive)
+
+        provider.handleIdentity(peerIdentity(name: "inactive-replacement"), channel: candidate)
+        provider.handleClosed(channel: current)
+
+        XCTAssertTrue(candidate.isActive, "the delayed incumbent close must not close its replacement")
+
+        provider.handleSecured(channel: candidate)
+        try await waitUntil("inactive incumbent replacement to attach") {
+            self.device()?.link?.activeChannel === candidate
+                && self.device()?.link?.isSecure == true
+        }
+
+        provider.handleClosed(channel: candidate)
+        _ = try? current.finish()
+        _ = try? candidate.finish()
+    }
+
+    @MainActor
+    func testActiveCloseWithPendingCandidateDetachesAndRejectsLateSecure() async throws {
+        let current = try makeActiveEmbeddedChannel()
+        let candidate = try makeActiveEmbeddedChannel()
+        try await registerSecuredLink(channel: current)
+        provider.handleIdentity(peerIdentity(), channel: candidate)
+
+        provider.handleClosed(channel: current)
+        XCTAssertFalse(candidate.isActive, "active close must clean up its pending candidate")
+        try await waitUntil("active close to detach device") {
+            self.device()?.isReachable == false && self.device()?.link == nil
+        }
+
+        provider.handleSecured(channel: candidate)
+        try await Task.sleep(nanoseconds: 50_000_000)
+        XCTAssertEqual(device()?.isReachable, false)
+        XCTAssertNil(device()?.link)
+
+        _ = try? current.finish()
+        _ = try? candidate.finish()
+    }
+
+    @MainActor
+    func testSecuredBeforeIdentityIsReplayedForFirstDevice() async throws {
+        let channel = try makeActiveEmbeddedChannel()
+
+        provider.handleSecured(channel: channel)
+        provider.handleIdentity(peerIdentity(), channel: channel)
+
+        try await waitUntil("early secured callback replay") {
+            self.device()?.link?.activeChannel === channel
+                && self.device()?.link?.isSecure == true
+                && self.device()?.isReachable == true
+        }
+
+        provider.handleClosed(channel: channel)
+        _ = try? channel.finish()
+    }
+
+    @MainActor
+    func testPacketsOnActiveLinkResolveNewestStagedIdentity() async throws {
+        let current = try makeActiveEmbeddedChannel()
+        let candidate = try makeActiveEmbeddedChannel()
+        try await registerSecuredLink(channel: current)
+        provider.handleIdentity(peerIdentity(name: "newest-staged-identity"), channel: candidate)
+        try await waitUntil("new identity upsert") {
+            self.device()?.name == "newest-staged-identity"
+        }
+        device()?.name = "stale-name"
+
+        provider.handlePacket(
+            NetworkPacket(type: PacketType.ping, body: ["message": .string("identity-refresh")]),
+            channel: current
+        )
+
+        try await waitUntil("packet to resolve latest identity") {
+            self.device()?.name == "newest-staged-identity"
+        }
+
+        provider.handleClosed(channel: candidate)
+        provider.handleClosed(channel: current)
+        _ = try? candidate.finish()
+        _ = try? current.finish()
+    }
+
+    @MainActor
+    func testLateOldLinkNotificationCannotDetachNewlyRegisteredLink() async throws {
+        let oldChannel = try makeActiveEmbeddedChannel()
+        try await registerSecuredLink(channel: oldChannel)
+        let oldLink = try XCTUnwrap(device()?.link)
+        provider.handleClosed(channel: oldChannel)
+        try await waitUntil("old link to detach") { self.device()?.isReachable == false }
+
+        let newChannel = try makeActiveEmbeddedChannel()
+        provider.handleIdentity(peerIdentity(name: "new-generation"), channel: newChannel)
+        provider.handleSecured(channel: newChannel)
+        try await waitUntil("new link generation to attach") {
+            self.device()?.link?.activeChannel === newChannel
+                && self.device()?.isReachable == true
+        }
+        let newLink = try XCTUnwrap(device()?.link)
+
+        oldLink.notifyClosed()
+        try await Task.sleep(nanoseconds: 50_000_000)
+
+        XCTAssertTrue(device()?.link === newLink)
+        XCTAssertEqual(device()?.isReachable, true)
+
+        provider.handleClosed(channel: newChannel)
+        _ = try? oldChannel.finish()
+        _ = try? newChannel.finish()
+    }
+
+    @MainActor
+    func testPromotionCloseReentersProviderAfterLockRelease() async throws {
+        let callbacks = ThreadSafeCounter()
+        let current = try makeActiveEmbeddedChannel { [provider] channel in
+            callbacks.increment()
+            provider.handleClosed(channel: channel)
+        }
+        let candidate = try makeActiveEmbeddedChannel()
+        try await registerSecuredLink(channel: current)
+        provider.handleIdentity(peerIdentity(), channel: candidate)
+
+        provider.handleSecured(channel: candidate)
+
+        XCTAssertEqual(callbacks.current, 1)
+        XCTAssertTrue(device()?.link?.activeChannel === candidate)
+        XCTAssertEqual(device()?.link?.isSecure, true)
+        XCTAssertEqual(device()?.isReachable, true)
+
+        provider.handleClosed(channel: candidate)
+        _ = try? current.finish()
+        _ = try? candidate.finish()
     }
 
     /// A paired, un-probeable peer that stopped announcing too is really
@@ -370,5 +618,37 @@ private final class FakePeerHandler: ChannelInboundHandler, @unchecked Sendable 
         } catch {
             context.close(promise: nil)
         }
+    }
+}
+
+private final class ThreadSafeCounter: @unchecked Sendable {
+    private let lock = NSLock()
+    private var value = 0
+
+    func increment() {
+        lock.lock()
+        value += 1
+        lock.unlock()
+    }
+
+    var current: Int {
+        lock.lock()
+        defer { lock.unlock() }
+        return value
+    }
+}
+
+private final class ReentrantCloseHandler: ChannelInboundHandler, @unchecked Sendable {
+    typealias InboundIn = ByteBuffer
+
+    private let onInactive: @Sendable (Channel) -> Void
+
+    init(onInactive: @escaping @Sendable (Channel) -> Void) {
+        self.onInactive = onInactive
+    }
+
+    func channelInactive(context: ChannelHandlerContext) {
+        onInactive(context.channel)
+        context.fireChannelInactive()
     }
 }

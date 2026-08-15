@@ -12,6 +12,59 @@ final class LocalMprisServiceTests: XCTestCase {
             packets[0].body["playerList"]?.arrayValue?.compactMap(\.stringValue),
             ["Mac"]
         )
+        XCTAssertEqual(packets[0].body["supportAlbumArtPayload"]?.boolValue, true)
+    }
+
+    func testCurrentStateUsesStableContentAddressedArtworkURL() {
+        let fake = FakeLocalMediaController(snapshot: .fixture(
+            title: "First title",
+            artworkData: Data("cover".utf8)
+        ))
+        let service = LocalMprisService(controller: fake)
+        let expected = "kdeconnect://macconnect/album-art/3fa405a8301ace34d11cf44a816080b8f0e49a48fbd048b8aef1543a8c58bdb6"
+
+        XCTAssertEqual(service.currentStatePacket()?.body["albumArtUrl"]?.stringValue, expected)
+
+        fake.snapshot.title = "Metadata refresh"
+        XCTAssertEqual(service.currentStatePacket()?.body["albumArtUrl"]?.stringValue, expected)
+    }
+
+    func testArtworkAtLimitIsAdvertisedButEmptyAndOversizedArtworkAreOmitted() {
+        let fake = FakeLocalMediaController(snapshot: .fixture(artworkData: Data(
+            repeating: 0x41,
+            count: 5 * 1024 * 1024
+        )))
+        let service = LocalMprisService(controller: fake)
+
+        XCTAssertEqual(service.currentStatePacket()?.body["albumArtUrl"]?.stringValue?.hasPrefix("kdeconnect://"), true)
+
+        fake.snapshot.artworkData = Data()
+        XCTAssertNil(service.currentStatePacket()?.body["albumArtUrl"])
+
+        fake.snapshot.artworkData = Data(repeating: 0x41, count: 5 * 1024 * 1024 + 1)
+        XCTAssertNil(service.currentStatePacket()?.body["albumArtUrl"])
+    }
+
+    func testArtworkTransferRequiresExactCurrentPlayerAndURLRequest() {
+        let artwork = Data("cover".utf8)
+        let fake = FakeLocalMediaController(snapshot: .fixture(
+            playerName: "IINA",
+            artworkData: artwork
+        ))
+        let service = LocalMprisService(controller: fake)
+        let currentURL = "kdeconnect://macconnect/album-art/3fa405a8301ace34d11cf44a816080b8f0e49a48fbd048b8aef1543a8c58bdb6"
+
+        XCTAssertEqual(
+            service.artworkTransfer(for: .artworkRequest(player: "IINA", url: currentURL)),
+            MprisArtworkTransfer(player: "IINA", url: currentURL, data: artwork)
+        )
+        XCTAssertNil(service.artworkTransfer(for: .artworkRequest(player: "IINA", url: currentURL + "-stale")))
+        XCTAssertNil(service.artworkTransfer(for: .artworkRequest(player: "Mac", url: currentURL)))
+        XCTAssertNil(service.artworkTransfer(for: .nowPlayingRequest))
+        XCTAssertNil(service.artworkTransfer(for: NetworkPacket(
+            type: PacketType.mpris,
+            body: ["player": .string("IINA"), "albumArtUrl": .string(currentURL)]
+        )))
     }
 
     func testPlayerListDoesNotExposeVolumeAsAFakeMediaPlayer() {
@@ -206,6 +259,7 @@ private extension LocalMediaSnapshot {
         title: String? = nil,
         artist: String? = nil,
         album: String? = nil,
+        artworkData: Data? = nil,
         isPlaying: Bool = false,
         transportAvailable: Bool = true,
         volume: Int? = 50,
@@ -217,6 +271,7 @@ private extension LocalMediaSnapshot {
             title: title,
             artist: artist,
             album: album,
+            artworkData: artworkData,
             isPlaying: isPlaying,
             transportAvailable: transportAvailable,
             volume: volume,
@@ -252,6 +307,13 @@ private extension NetworkPacket {
         NetworkPacket(
             type: PacketType.mprisRequest,
             body: ["player": .string("Mac"), "setVolume": .int(Int64(percent))]
+        )
+    }
+
+    static func artworkRequest(player: String, url: String) -> NetworkPacket {
+        NetworkPacket(
+            type: PacketType.mprisRequest,
+            body: ["player": .string(player), "albumArtUrl": .string(url)]
         )
     }
 }

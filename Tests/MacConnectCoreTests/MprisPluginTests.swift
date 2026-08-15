@@ -3,25 +3,14 @@ import XCTest
 
 @MainActor
 final class MprisPluginTests: XCTestCase {
-    override func tearDown() {
-        MprisStore.shared.clear(deviceId: "phone")
-        super.tearDown()
-    }
-
-    func testCapabilitiesAdvertiseBothControllerAndControlledDirections() {
+    func testCapabilitiesAdvertiseAndroidControlledDirection() {
         let plugin = makePlugin()
 
-        XCTAssertEqual(
-            Set(plugin.incomingCapabilities),
-            [PacketType.mpris, PacketType.mprisRequest]
-        )
-        XCTAssertEqual(
-            Set(plugin.outgoingCapabilities),
-            [PacketType.mprisRequest, PacketType.mpris]
-        )
+        XCTAssertEqual(plugin.incomingCapabilities, [PacketType.mprisRequest])
+        XCTAssertEqual(plugin.outgoingCapabilities, [PacketType.mpris])
     }
 
-    func testLocalRequestIsAnsweredAndRemoteStateStillUpdatesStore() async {
+    func testLocalRequestIsAnsweredAndRemoteStateDoesNotTriggerFollowUp() async {
         let recorder = PacketRecorder()
         let plugin = makePlugin(recorder: recorder)
         let device = makeDevice(id: "phone", incoming: [PacketType.mpris])
@@ -33,12 +22,13 @@ final class MprisPluginTests: XCTestCase {
             ["Mac"]
         )
 
+        let sentBeforeRemoteState = recorder.packets.count
         await plugin.handle(packet: NetworkPacket(
             type: PacketType.mpris,
-            body: ["player": .string("Phone"), "title": .string("Remote Track")]
+            body: ["playerList": .array([.string("Phone Player")])]
         ), from: device)
 
-        XCTAssertEqual(MprisStore.shared.state(for: "phone")?.title, "Remote Track")
+        XCTAssertEqual(recorder.packets.count, sentBeforeRemoteState)
     }
 
     func testAttachSendsCurrentPlayerListAndState() async {
@@ -62,29 +52,32 @@ final class MprisPluginTests: XCTestCase {
         XCTAssertEqual(recorder.packets.last?.body["player"]?.stringValue, "IINA")
     }
 
-    func testRemotePlayerFanoutRequestsVolumeExplicitly() async {
-        let recorder = PacketRecorder()
-        let plugin = makePlugin(recorder: recorder)
+    func testMatchingArtworkRequestRoutesToSenderWithoutNormalResponse() async {
+        let packetRecorder = PacketRecorder()
+        let artworkRecorder = ArtworkRecorder()
+        var snapshot = populatedSnapshot
+        snapshot.playerName = "IINA"
+        snapshot.artworkData = Data("cover".utf8)
+        let plugin = MprisPlugin(
+            localController: FakeLocalMediaController(snapshot: snapshot),
+            devices: { [] },
+            pluginEnabled: { _ in true },
+            sendPacket: packetRecorder.record,
+            sendArtwork: artworkRecorder.record
+        )
+        let device = makeDevice(id: "trusted-phone")
+        let url = "kdeconnect://macconnect/album-art/3fa405a8301ace34d11cf44a816080b8f0e49a48fbd048b8aef1543a8c58bdb6"
 
         await plugin.handle(packet: NetworkPacket(
-            type: PacketType.mpris,
-            body: ["playerList": .array([.string("Spotify")])]
-        ), from: makeDevice())
+            type: PacketType.mprisRequest,
+            body: ["player": .string("IINA"), "albumArtUrl": .string(url)]
+        ), from: device)
 
-        XCTAssertEqual(recorder.packets.last?.body["requestNowPlaying"]?.boolValue, true)
-        XCTAssertEqual(recorder.packets.last?.body["requestVolume"]?.boolValue, true)
-        XCTAssertEqual(recorder.packets.last?.body["player"]?.stringValue, "Spotify")
-    }
-
-    func testRemoteVolumePacketUsesSelectedPlayerAndClampsBothBoundaries() {
-        let high = MprisPlugin.volumePacket(player: "Spotify", percent: 140)
-        let low = MprisPlugin.volumePacket(player: "Phone Player", percent: -1)
-
-        XCTAssertEqual(high.type, PacketType.mprisRequest)
-        XCTAssertEqual(high.body["player"]?.stringValue, "Spotify")
-        XCTAssertEqual(high.body["setVolume"]?.intValue, 100)
-        XCTAssertEqual(low.body["player"]?.stringValue, "Phone Player")
-        XCTAssertEqual(low.body["setVolume"]?.intValue, 0)
+        XCTAssertTrue(packetRecorder.packets.isEmpty)
+        XCTAssertEqual(artworkRecorder.transfers, [
+            MprisArtworkTransfer(player: "IINA", url: url, data: Data("cover".utf8))
+        ])
+        XCTAssertEqual(artworkRecorder.deviceIds, ["trusted-phone"])
     }
 
     func testLocalChangeBroadcastsOnlyToEligibleDevice() {
@@ -145,6 +138,7 @@ final class MprisPluginTests: XCTestCase {
             title: nil,
             artist: nil,
             album: nil,
+            artworkData: nil,
             isPlaying: false,
             transportAvailable: false,
             volume: nil,
@@ -188,11 +182,84 @@ final class MprisPluginTests: XCTestCase {
         XCTAssertEqual(recorder.packets[1].body["player"]?.stringValue, "IINA")
     }
 
+    func testLocalChangeFansOutStateToEveryEligibleDevice() {
+        let first = makeDevice(id: "k60")
+        let second = makeDevice(id: "note12")
+        let recorder = PacketRecorder()
+        let fake = FakeLocalMediaController(snapshot: populatedSnapshot)
+        let plugin = MprisPlugin(
+            localController: fake,
+            devices: { [first, second] },
+            pluginEnabled: { _ in true },
+            sendPacket: recorder.record
+        )
+
+        withExtendedLifetime(plugin) { fake.emitChange() }
+
+        XCTAssertEqual(Set(recorder.deviceIds), ["k60", "note12"])
+        XCTAssertTrue(recorder.packets.allSatisfy {
+            $0.body["isPlaying"]?.boolValue == true
+        })
+    }
+
+    func testChangedCoherentAutomationRefreshFansOutToTwoPhonesWithoutAttach() async {
+        let readers = PluginAutomationReaders()
+        let bridge = MediaRemoteBridge(
+            automationMetadataReader: { await readers.readMetadata() },
+            automationArtworkReader: { await readers.readArtwork() },
+            pollingInterval: .milliseconds(1)
+        )
+        let controller = SystemLocalMediaController(
+            transport: bridge,
+            volumeController: PluginFakeVolumeController(),
+            notificationDelay: 0
+        )
+        let recorder = PacketRecorder()
+        let firstBroadcast = expectation(description: "initial state reaches both phones")
+        firstBroadcast.expectedFulfillmentCount = 4
+        recorder.onRecord = firstBroadcast.fulfill
+        let plugin = MprisPlugin(
+            localController: controller,
+            devices: { [self.makeDevice(id: "k60"), self.makeDevice(id: "note12")] },
+            pluginEnabled: { _ in true },
+            sendPacket: recorder.record
+        )
+
+        let firstReadersStarted = await readers.waitForStarts(metadata: 1, artwork: 1)
+        XCTAssertTrue(firstReadersStarted)
+        await readers.finishMetadata(pluginMediaState(title: "Red Song"))
+        await readers.finishArtwork(Data("red-cover".utf8))
+        await fulfillment(of: [firstBroadcast], timeout: 0.5)
+
+        recorder.removeAll()
+        let changedBroadcast = expectation(description: "changed state reaches both open controllers")
+        changedBroadcast.expectedFulfillmentCount = 2
+        recorder.onRecord = changedBroadcast.fulfill
+        let secondReadersStarted = await readers.waitForStarts(metadata: 2, artwork: 2)
+        XCTAssertTrue(secondReadersStarted)
+        await readers.finishArtwork(Data("blue-cover".utf8))
+        await readers.finishMetadata(pluginMediaState(title: "Blue Song"))
+        await fulfillment(of: [changedBroadcast], timeout: 0.5)
+
+        withExtendedLifetime(plugin) {
+            XCTAssertEqual(Set(recorder.deviceIds), ["k60", "note12"])
+            XCTAssertEqual(recorder.packets.count, 2)
+            XCTAssertTrue(recorder.packets.allSatisfy {
+                $0.body["title"]?.stringValue == "Blue Song" &&
+                    $0.body["albumArtUrl"]?.stringValue ==
+                    "kdeconnect://macconnect/album-art/" +
+                    "0bb8e765304cae912187fe15d63f1ba92d0470de442335326f69325163429c34"
+            })
+        }
+        bridge.stopPolling()
+    }
+
     private var populatedSnapshot: LocalMediaSnapshot {
         LocalMediaSnapshot(
             title: "Local Track",
             artist: "Local Artist",
             album: nil,
+            artworkData: nil,
             isPlaying: true,
             transportAvailable: true,
             volume: 35,
@@ -235,9 +302,27 @@ final class MprisPluginTests: XCTestCase {
 private final class PacketRecorder {
     private(set) var packets: [NetworkPacket] = []
     private(set) var deviceIds: [String] = []
+    var onRecord: (() -> Void)?
 
     func record(_ packet: NetworkPacket, _ device: Device) {
         packets.append(packet)
+        deviceIds.append(device.id)
+        onRecord?()
+    }
+
+    func removeAll() {
+        packets.removeAll()
+        deviceIds.removeAll()
+    }
+}
+
+@MainActor
+private final class ArtworkRecorder {
+    private(set) var transfers: [MprisArtworkTransfer] = []
+    private(set) var deviceIds: [String] = []
+
+    func record(_ transfer: MprisArtworkTransfer, _ device: Device) {
+        transfers.append(transfer)
         deviceIds.append(device.id)
     }
 }
@@ -247,4 +332,63 @@ private extension NetworkPacket {
         type: PacketType.mprisRequest,
         body: ["requestPlayerList": .bool(true)]
     )
+}
+
+private func pluginMediaState(title: String) -> MediaRemoteState {
+    MediaRemoteState(
+        playerName: "Mac",
+        title: title,
+        artist: "Artist",
+        album: "Album",
+        artworkData: nil,
+        isPlaying: true,
+        isAvailable: true,
+        lengthMs: 120_000,
+        positionMs: 1000
+    )
+}
+
+private actor PluginAutomationReaders {
+    private var metadataContinuations: [CheckedContinuation<MediaRemoteState?, Never>] = []
+    private var artworkContinuations: [CheckedContinuation<Data?, Never>] = []
+    private var metadataStarts = 0
+    private var artworkStarts = 0
+
+    func readMetadata() async -> MediaRemoteState? {
+        metadataStarts += 1
+        return await withCheckedContinuation { metadataContinuations.append($0) }
+    }
+
+    func readArtwork() async -> Data? {
+        artworkStarts += 1
+        return await withCheckedContinuation { artworkContinuations.append($0) }
+    }
+
+    func finishMetadata(_ state: MediaRemoteState?) {
+        metadataContinuations.removeFirst().resume(returning: state)
+    }
+
+    func finishArtwork(_ data: Data?) {
+        artworkContinuations.removeFirst().resume(returning: data)
+    }
+
+    func waitForStarts(metadata: Int, artwork: Int) async -> Bool {
+        for _ in 0 ..< 1000 {
+            if metadataStarts >= metadata, artworkStarts >= artwork {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return false
+    }
+}
+
+@MainActor
+private final class PluginFakeVolumeController: SystemVolumeProviding {
+    var volume: Int? = 50
+    var isMuted: Bool? = false
+    var onChange: (() -> Void)?
+
+    func setVolume(_: Int) {}
+    func setMuted(_: Bool) {}
 }
