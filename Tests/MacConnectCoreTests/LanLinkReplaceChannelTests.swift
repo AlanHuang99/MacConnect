@@ -36,7 +36,7 @@ final class LanLinkReplaceChannelTests: XCTestCase {
         let candidate = try makeActiveChannel()
         let link = makeLink(channel: current)
 
-        guard case let .replaced(previous) = link.adoptChannel(candidate) else {
+        guard case .replaced(let previous) = link.adoptChannel(candidate) else {
             return XCTFail("insecure link must adopt the candidate")
         }
         XCTAssertTrue(previous === current)
@@ -55,7 +55,7 @@ final class LanLinkReplaceChannelTests: XCTestCase {
         link.isSecure = true
         try current.close().wait()
 
-        guard case let .replaced(previous) = link.adoptChannel(candidate) else {
+        guard case .replaced(let previous) = link.adoptChannel(candidate) else {
             return XCTFail("inactive link must adopt the candidate even when marked secure")
         }
         XCTAssertTrue(previous === current)

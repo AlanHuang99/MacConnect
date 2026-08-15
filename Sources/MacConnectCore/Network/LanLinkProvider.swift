@@ -493,7 +493,7 @@ public final class LanLinkProvider: @unchecked Sendable {
                 channel.close(promise: nil)
                 Log.net.info("Preserved secure channel for existing link \(identity.deviceId, privacy: .public)")
                 return
-            case let .replaced(previous: oldChannel):
+            case .replaced(let oldChannel):
                 channelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
                 channelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
                 linkLock.unlock()
