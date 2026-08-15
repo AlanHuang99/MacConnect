@@ -4,24 +4,17 @@ import XCTest
 @MainActor
 final class MprisPluginTests: XCTestCase {
     override func tearDown() {
-        MprisStore.shared.clear(deviceId: "phone")
         super.tearDown()
     }
 
-    func testCapabilitiesAdvertiseBothControllerAndControlledDirections() {
+    func testCapabilitiesAdvertiseAndroidControlledDirection() {
         let plugin = makePlugin()
 
-        XCTAssertEqual(
-            Set(plugin.incomingCapabilities),
-            [PacketType.mpris, PacketType.mprisRequest]
-        )
-        XCTAssertEqual(
-            Set(plugin.outgoingCapabilities),
-            [PacketType.mprisRequest, PacketType.mpris]
-        )
+        XCTAssertEqual(plugin.incomingCapabilities, [PacketType.mprisRequest])
+        XCTAssertEqual(plugin.outgoingCapabilities, [PacketType.mpris])
     }
 
-    func testLocalRequestIsAnsweredAndRemoteStateStillUpdatesStore() async {
+    func testLocalRequestIsAnsweredAndRemoteStateDoesNotTriggerFollowUp() async {
         let recorder = PacketRecorder()
         let plugin = makePlugin(recorder: recorder)
         let device = makeDevice(id: "phone", incoming: [PacketType.mpris])
@@ -33,12 +26,13 @@ final class MprisPluginTests: XCTestCase {
             ["Mac"]
         )
 
+        let sentBeforeRemoteState = recorder.packets.count
         await plugin.handle(packet: NetworkPacket(
             type: PacketType.mpris,
-            body: ["player": .string("Phone"), "title": .string("Remote Track")]
+            body: ["playerList": .array([.string("Phone Player")])]
         ), from: device)
 
-        XCTAssertEqual(MprisStore.shared.state(for: "phone")?.title, "Remote Track")
+        XCTAssertEqual(recorder.packets.count, sentBeforeRemoteState)
     }
 
     func testAttachSendsCurrentPlayerListAndState() async {
@@ -60,31 +54,6 @@ final class MprisPluginTests: XCTestCase {
             ["IINA"]
         )
         XCTAssertEqual(recorder.packets.last?.body["player"]?.stringValue, "IINA")
-    }
-
-    func testRemotePlayerFanoutRequestsVolumeExplicitly() async {
-        let recorder = PacketRecorder()
-        let plugin = makePlugin(recorder: recorder)
-
-        await plugin.handle(packet: NetworkPacket(
-            type: PacketType.mpris,
-            body: ["playerList": .array([.string("Spotify")])]
-        ), from: makeDevice())
-
-        XCTAssertEqual(recorder.packets.last?.body["requestNowPlaying"]?.boolValue, true)
-        XCTAssertEqual(recorder.packets.last?.body["requestVolume"]?.boolValue, true)
-        XCTAssertEqual(recorder.packets.last?.body["player"]?.stringValue, "Spotify")
-    }
-
-    func testRemoteVolumePacketUsesSelectedPlayerAndClampsBothBoundaries() {
-        let high = MprisPlugin.volumePacket(player: "Spotify", percent: 140)
-        let low = MprisPlugin.volumePacket(player: "Phone Player", percent: -1)
-
-        XCTAssertEqual(high.type, PacketType.mprisRequest)
-        XCTAssertEqual(high.body["player"]?.stringValue, "Spotify")
-        XCTAssertEqual(high.body["setVolume"]?.intValue, 100)
-        XCTAssertEqual(low.body["player"]?.stringValue, "Phone Player")
-        XCTAssertEqual(low.body["setVolume"]?.intValue, 0)
     }
 
     func testLocalChangeBroadcastsOnlyToEligibleDevice() {
@@ -186,6 +155,26 @@ final class MprisPluginTests: XCTestCase {
             ["IINA"]
         )
         XCTAssertEqual(recorder.packets[1].body["player"]?.stringValue, "IINA")
+    }
+
+    func testLocalChangeFansOutStateToEveryEligibleDevice() {
+        let first = makeDevice(id: "k60")
+        let second = makeDevice(id: "note12")
+        let recorder = PacketRecorder()
+        let fake = FakeLocalMediaController(snapshot: populatedSnapshot)
+        let plugin = MprisPlugin(
+            localController: fake,
+            devices: { [first, second] },
+            pluginEnabled: { _ in true },
+            sendPacket: recorder.record
+        )
+
+        withExtendedLifetime(plugin) { fake.emitChange() }
+
+        XCTAssertEqual(Set(recorder.deviceIds), ["k60", "note12"])
+        XCTAssertTrue(recorder.packets.allSatisfy {
+            $0.body["isPlaying"]?.boolValue == true
+        })
     }
 
     private var populatedSnapshot: LocalMediaSnapshot {
