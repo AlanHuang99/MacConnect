@@ -2,12 +2,6 @@ import Foundation
 import NIOCore
 
 public final class LanLink: @unchecked Sendable {
-    public enum ChannelAdoption {
-        case unchanged
-        case rejected
-        case replaced(previous: Channel)
-    }
-
     public let deviceId: String
 
     private let lock = NSLock()
@@ -53,39 +47,33 @@ public final class LanLink: @unchecked Sendable {
         return channel
     }
 
-    /// Atomically decide whether a candidate may replace the active channel.
-    /// The old channel is intentionally NOT closed here — see below.
-    ///
-    /// `_isSecure` is reset to `false` because the new channel has not
-    /// completed its TLS handshake yet. Without this reset, `send()`
-    /// would happily write to the new channel during the ~50–100 ms
-    /// pre-handshake window; NIOSSL would buffer the plaintext and
-    /// silently drop it if the new channel never reaches handshake (the
-    /// observed cause of intermittent "send file" failures with peers
-    /// like the KDE Connect iOS app that cycle TCP every 5 s). The
-    /// flag flips back to `true` when LanLinkProvider.handleSecured
-    /// fires for the new channel.
-    ///
-    /// Why the close is deferred to the caller: the caller
-    /// (`LanLinkProvider.handleIdentity`) holds `linkLock` while replacing
-    /// the channel, and `Channel.close` can run synchronously on the calling
-    /// event-loop thread — firing `channelInactive` → `onClose` →
-    /// `handleClosed`, which takes that same non-recursive `linkLock`.
-    /// Closing inline therefore self-deadlocks the discovery queue. The
-    /// caller closes a replaced channel only after releasing `linkLock`.
-    public func adoptChannel(_ newChannel: Channel) -> ChannelAdoption {
+    /// Mark `candidate` secure only if it is still this link's active channel.
+    /// A late TLS callback from a superseded channel must not mutate the link.
+    @discardableResult
+    public func markSecured(channel candidate: Channel) -> Bool {
         lock.lock()
         defer { lock.unlock() }
-        let old = channel
-        if old === newChannel {
-            return .unchanged
-        }
-        if _isSecure, old.isActive {
-            return .rejected
-        }
-        channel = newChannel
-        _isSecure = false
-        return .replaced(previous: old)
+        guard channel === candidate else { return false }
+        _isSecure = true
+        return true
+    }
+
+    /// Atomically promote an already-secured candidate and return the
+    /// superseded active channel for deferred closure by the provider.
+    ///
+    /// The candidate is never installed before TLS completes, so concurrent
+    /// sends continue using the old secure channel throughout the handshake.
+    /// The returned channel is intentionally left open: the provider holds its
+    /// own state lock while calling this method, and a synchronous close can
+    /// re-enter the provider through `channelInactive`.
+    @discardableResult
+    public func promoteSecuredChannel(_ candidate: Channel) -> Channel? {
+        lock.lock()
+        defer { lock.unlock() }
+        let previous = channel
+        channel = candidate
+        _isSecure = true
+        return previous === candidate ? nil : previous
     }
 
     public func deliverPacket(_ packet: NetworkPacket) {

@@ -24,6 +24,23 @@ public final class LanLinkProvider: @unchecked Sendable {
     private let linkLock = NSLock()
     private var channelToDeviceId: [ObjectIdentifier: String] = [:]
     private var linksByDeviceId: [String: LanLink] = [:]
+    private struct PendingCandidate {
+        let channel: Channel
+        let identity: IdentityPayload
+    }
+
+    /// The newest identity-bearing channel still completing TLS for each
+    /// device. The existing `LanLink` stays active and secure until this exact
+    /// channel reports handshake completion.
+    private var pendingCandidatesByDeviceId: [String: PendingCandidate] = [:]
+    /// Latest identity seen for packet freshness updates. A `LanLink` outlives
+    /// individual channels, so its packet callback resolves this dynamically
+    /// instead of retaining the first connection's identity forever.
+    private var identitiesByDeviceId: [String: IdentityPayload] = [:]
+    /// Outbound channels can complete TLS immediately after becoming active,
+    /// before the connect future registers their known identity. Remember that
+    /// callback and replay it once `handleIdentity` installs the channel maps.
+    private var securedBeforeIdentity: Set<ObjectIdentifier> = []
 
     /// Per-peer dial cooldown so a peer whose TLS handshake keeps
     /// failing doesn't get redialed every 5 s discovery tick. Without
@@ -235,6 +252,7 @@ public final class LanLinkProvider: @unchecked Sendable {
         // so it can resolve the deviceId and invoke `link.notifyClosed()`.
         linkLock.lock()
         let activeLinks = Array(linksByDeviceId.values)
+        let pendingChannels = pendingCandidatesByDeviceId.values.map(\.channel)
         linkLock.unlock()
 
         // Fan all closes out at once, count them down with a DispatchGroup
@@ -243,6 +261,10 @@ public final class LanLinkProvider: @unchecked Sendable {
         for link in activeLinks {
             group.enter()
             link.activeChannel.close().whenComplete { _ in group.leave() }
+        }
+        for channel in pendingChannels {
+            group.enter()
+            channel.close().whenComplete { _ in group.leave() }
         }
         if let serverChannel {
             group.enter()
@@ -258,7 +280,10 @@ public final class LanLinkProvider: @unchecked Sendable {
         linkLock.lock()
         let stragglers = Array(linksByDeviceId.values)
         linksByDeviceId.removeAll()
+        pendingCandidatesByDeviceId.removeAll()
         channelToDeviceId.removeAll()
+        identitiesByDeviceId.removeAll()
+        securedBeforeIdentity.removeAll()
         dialCooldown.removeAll()
         announcements.removeAll()
         linkLock.unlock()
@@ -325,13 +350,20 @@ public final class LanLinkProvider: @unchecked Sendable {
     private func dropAllLinksForRestart() {
         linkLock.lock()
         let links = Array(linksByDeviceId.values)
+        let pendingChannels = pendingCandidatesByDeviceId.values.map(\.channel)
         linksByDeviceId.removeAll()
+        pendingCandidatesByDeviceId.removeAll()
         channelToDeviceId.removeAll()
+        identitiesByDeviceId.removeAll()
+        securedBeforeIdentity.removeAll()
         dialCooldown.removeAll()
         linkLock.unlock()
         for link in links {
             link.disconnect()
             link.notifyClosed()
+        }
+        for channel in pendingChannels {
+            channel.close(promise: nil)
         }
     }
 
@@ -357,14 +389,22 @@ public final class LanLinkProvider: @unchecked Sendable {
     private func dropLinkOnQueue(deviceId: String) {
         linkLock.lock()
         let link = linksByDeviceId.removeValue(forKey: deviceId)
+        let pending = pendingCandidatesByDeviceId.removeValue(forKey: deviceId)
         if let link {
             channelToDeviceId.removeValue(forKey: ObjectIdentifier(link.activeChannel))
         }
+        if let pending {
+            channelToDeviceId.removeValue(forKey: ObjectIdentifier(pending.channel))
+            securedBeforeIdentity.remove(ObjectIdentifier(pending.channel))
+        }
+        identitiesByDeviceId.removeValue(forKey: deviceId)
         dialCooldown.clear(deviceId: deviceId)
         linkLock.unlock()
-        guard let link else { return }
-        link.disconnect()
-        link.notifyClosed()
+        pending?.channel.close(promise: nil)
+        if let link {
+            link.disconnect()
+            link.notifyClosed()
+        }
     }
 
     // MARK: - Network path monitoring
@@ -467,7 +507,7 @@ public final class LanLinkProvider: @unchecked Sendable {
 
     // MARK: - Channel callbacks
 
-    private func handleIdentity(_ identity: IdentityPayload, channel: Channel) {
+    func handleIdentity(_ identity: IdentityPayload, channel: Channel) {
         // Same defence as in UDP discovery: reject any inbound TCP from one
         // of our own interface IPs. Catches the case where another
         // KDE Connect implementation on the same Mac is connecting to us.
@@ -482,36 +522,38 @@ public final class LanLinkProvider: @unchecked Sendable {
             return
         }
         Log.net.info("Identity from \(identity.deviceName, privacy: .public) (\(identity.deviceId, privacy: .public))")
+        let channelKey = ObjectIdentifier(channel)
+        var supersededPending: Channel?
+        var wasAlreadySecured = false
         linkLock.lock()
         if let existing = linksByDeviceId[identity.deviceId] {
-            switch existing.adoptChannel(channel) {
-            case .unchanged:
+            identitiesByDeviceId[identity.deviceId] = identity
+            if existing.activeChannel === channel
+                || pendingCandidatesByDeviceId[identity.deviceId]?.channel === channel
+            {
+                wasAlreadySecured = securedBeforeIdentity.remove(channelKey) != nil
                 linkLock.unlock()
-                return
-            case .rejected:
+            } else {
+                supersededPending = pendingCandidatesByDeviceId[identity.deviceId]?.channel
+                pendingCandidatesByDeviceId[identity.deviceId] = PendingCandidate(
+                    channel: channel, identity: identity
+                )
+                channelToDeviceId[channelKey] = identity.deviceId
+                wasAlreadySecured = securedBeforeIdentity.remove(channelKey) != nil
                 linkLock.unlock()
-                channel.close(promise: nil)
-                Log.net.info("Preserved secure channel for existing link \(identity.deviceId, privacy: .public)")
-                return
-            case .replaced(let oldChannel):
-                channelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
-                channelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
-                linkLock.unlock()
-                // Close the superseded channel OUTSIDE linkLock. NIO can run this
-                // close synchronously, firing channelInactive -> onClose ->
-                // handleClosed on this thread; handleClosed takes linkLock, so
-                // closing while we still held it self-deadlocked the discovery
-                // queue (every peer reconnect race froze discovery on both Macs,
-                // surfacing as the app silently finding no devices). The old
-                // channel's deviceId mapping is already removed above, so
-                // handleClosed no-ops for it.
-                oldChannel.close(promise: nil)
-                Log.net.info("Replaced channel for existing link \(identity.deviceId, privacy: .public)")
-                Task { @MainActor in
-                    _ = DeviceManager.shared.upsert(identity: identity)
-                }
-                return
+                // Closing can synchronously fire `handleClosed`, which takes
+                // `linkLock`; always do it after the pending map is replaced
+                // and the provider lock is released.
+                supersededPending?.close(promise: nil)
+                Log.net.info("Staged TLS candidate for existing link \(identity.deviceId, privacy: .public)")
             }
+            Task { @MainActor in
+                _ = DeviceManager.shared.upsert(identity: identity)
+            }
+            if wasAlreadySecured {
+                handleSecured(channel: channel)
+            }
+            return
         }
         let link = LanLink(
             deviceId: identity.deviceId,
@@ -523,7 +565,7 @@ public final class LanLinkProvider: @unchecked Sendable {
                 // a concurrent read of a captured var).
                 let provider = self
                 Task { @MainActor in
-                    provider?.dispatch(packet, identity: identity)
+                    provider?.dispatch(packet, deviceId: identity.deviceId)
                 }
             },
             onClose: { [weak self] in
@@ -537,10 +579,15 @@ public final class LanLinkProvider: @unchecked Sendable {
             }
         )
         linksByDeviceId[identity.deviceId] = link
-        channelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
+        identitiesByDeviceId[identity.deviceId] = identity
+        channelToDeviceId[channelKey] = identity.deviceId
+        wasAlreadySecured = securedBeforeIdentity.remove(channelKey) != nil
         linkLock.unlock()
         Task { @MainActor in
             _ = DeviceManager.shared.upsert(identity: identity)
+        }
+        if wasAlreadySecured {
+            handleSecured(channel: channel)
         }
     }
 
@@ -548,35 +595,79 @@ public final class LanLinkProvider: @unchecked Sendable {
         linkLock.lock()
         let deviceId = channelToDeviceId[ObjectIdentifier(channel)]
         let link = deviceId.flatMap { linksByDeviceId[$0] }
+        let isActive = link?.activeChannel === channel
         linkLock.unlock()
-        guard let link else {
+        guard let link, isActive else {
             Log.net.warning("Packet on unknown channel; dropping (\(packet.type, privacy: .public))")
             return
         }
         link.deliverPacket(packet)
     }
 
-    private func handleSecured(channel: Channel) {
+    func handleSecured(channel: Channel) {
+        let channelKey = ObjectIdentifier(channel)
+        var supersededActive: Channel?
+        var linkToAttach: LanLink?
+        var deviceIdToAttach: String?
+        var stale = false
         linkLock.lock()
-        guard let deviceId = channelToDeviceId[ObjectIdentifier(channel)],
+        guard let deviceId = channelToDeviceId[channelKey],
               let link = linksByDeviceId[deviceId]
         else {
+            if channel.isActive {
+                securedBeforeIdentity.insert(channelKey)
+            }
             linkLock.unlock()
             return
         }
-        link.isSecure = true
-        // Successful handshake clears any prior dial-cooldown.
-        dialCooldown.clear(deviceId: deviceId)
+        if pendingCandidatesByDeviceId[deviceId]?.channel === channel {
+            pendingCandidatesByDeviceId.removeValue(forKey: deviceId)
+            supersededActive = link.promoteSecuredChannel(channel)
+            if let supersededActive {
+                channelToDeviceId.removeValue(forKey: ObjectIdentifier(supersededActive))
+            }
+            dialCooldown.clear(deviceId: deviceId)
+            linkToAttach = link
+            deviceIdToAttach = deviceId
+        } else if link.markSecured(channel: channel) {
+            // First-device flow: the identity-bearing channel is already the
+            // active channel, so only its secure bit needs to change.
+            dialCooldown.clear(deviceId: deviceId)
+            linkToAttach = link
+            deviceIdToAttach = deviceId
+        } else {
+            // A newer candidate won while this callback was queued.
+            channelToDeviceId.removeValue(forKey: channelKey)
+            stale = true
+        }
         linkLock.unlock()
-        Log.net.info("Link secured: \(deviceId, privacy: .public)")
+
+        if stale {
+            channel.close(promise: nil)
+            return
+        }
+        // Promotion is already atomic and secure. Close the superseded active
+        // channel only after releasing `linkLock`, so synchronous close
+        // re-entry cannot deadlock or detach the newly promoted channel.
+        supersededActive?.close(promise: nil)
+        guard let linkToAttach, let deviceIdToAttach else { return }
+        Log.net.info("Link secured: \(deviceIdToAttach, privacy: .public)")
         Task { @MainActor in
-            DeviceManager.shared.attach(link: link, to: deviceId)
+            DeviceManager.shared.attach(link: linkToAttach, to: deviceIdToAttach)
         }
     }
 
-    private func handleClosed(channel: Channel) {
+    func handleClosed(channel: Channel) {
+        let channelKey = ObjectIdentifier(channel)
+        var pendingToClose: Channel?
         linkLock.lock()
-        guard let deviceId = channelToDeviceId.removeValue(forKey: ObjectIdentifier(channel)) else {
+        securedBeforeIdentity.remove(channelKey)
+        guard let deviceId = channelToDeviceId.removeValue(forKey: channelKey) else {
+            linkLock.unlock()
+            return
+        }
+        if pendingCandidatesByDeviceId[deviceId]?.channel === channel {
+            pendingCandidatesByDeviceId.removeValue(forKey: deviceId)
             linkLock.unlock()
             return
         }
@@ -588,8 +679,15 @@ public final class LanLinkProvider: @unchecked Sendable {
         let wasSecure = link?.isSecure ?? false
         if isActive {
             linksByDeviceId.removeValue(forKey: deviceId)
+            identitiesByDeviceId.removeValue(forKey: deviceId)
+            if let pending = pendingCandidatesByDeviceId.removeValue(forKey: deviceId) {
+                channelToDeviceId.removeValue(forKey: ObjectIdentifier(pending.channel))
+                securedBeforeIdentity.remove(ObjectIdentifier(pending.channel))
+                pendingToClose = pending.channel
+            }
         }
         linkLock.unlock()
+        pendingToClose?.close(promise: nil)
         // If the channel closed BEFORE TLS completed (peer drops the
         // socket mid-handshake — e.g. our cert is rejected), apply a
         // backoff so we don't dial again on the very next discovery
@@ -604,7 +702,11 @@ public final class LanLinkProvider: @unchecked Sendable {
     }
 
     @MainActor
-    private func dispatch(_ packet: NetworkPacket, identity: IdentityPayload) {
+    private func dispatch(_ packet: NetworkPacket, deviceId: String) {
+        linkLock.lock()
+        let identity = identitiesByDeviceId[deviceId]
+        linkLock.unlock()
+        guard let identity else { return }
         let device = DeviceManager.shared.upsert(identity: identity)
         Log.plugin.info("Recv \(packet.type, privacy: .public) from \(identity.deviceName, privacy: .public)")
         if packet.type == PacketType.pair {

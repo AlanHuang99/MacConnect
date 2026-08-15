@@ -3,7 +3,7 @@ import NIOCore
 import NIOEmbedded
 import XCTest
 
-/// Pins `LanLink`'s duplicate-channel adoption policy.
+/// Pins `LanLink`'s atomic post-TLS promotion contract.
 final class LanLinkReplaceChannelTests: XCTestCase {
     private func makeActiveChannel() throws -> EmbeddedChannel {
         let ch = EmbeddedChannel()
@@ -15,52 +15,43 @@ final class LanLinkReplaceChannelTests: XCTestCase {
         LanLink(deviceId: "dev1", channel: channel, onPacket: { _ in }, onClose: {})
     }
 
-    func testSecureActiveLinkRejectsDuplicateCandidate() throws {
+    func testPromotingSecuredCandidateReturnsActiveChannelWithoutClosingIt() throws {
         let current = try makeActiveChannel()
         let candidate = try makeActiveChannel()
         let link = makeLink(channel: current)
         link.isSecure = true
 
-        guard case .rejected = link.adoptChannel(candidate) else {
-            return XCTFail("secure active link must reject the candidate")
-        }
-        XCTAssertTrue(link.activeChannel === current)
+        let previous = link.promoteSecuredChannel(candidate)
+
+        XCTAssertTrue(previous === current)
+        XCTAssertTrue(current.isActive, "promotion must leave deferred closure to the provider")
+        XCTAssertTrue(link.activeChannel === candidate)
         XCTAssertTrue(link.isSecure)
 
         _ = try? current.finish()
         _ = try? candidate.finish()
     }
 
-    func testInsecureLinkAdoptsCandidateAndReturnsCurrentChannel() throws {
+    func testPromotingCurrentChannelMarksFirstDeviceFlowSecure() throws {
         let current = try makeActiveChannel()
-        let candidate = try makeActiveChannel()
         let link = makeLink(channel: current)
 
-        guard case .replaced(let previous) = link.adoptChannel(candidate) else {
-            return XCTFail("insecure link must adopt the candidate")
-        }
-        XCTAssertTrue(previous === current)
-        XCTAssertTrue(current.isActive, "adoption must not close the previous channel inline")
-        XCTAssertTrue(link.activeChannel === candidate)
-        XCTAssertFalse(link.isSecure)
+        XCTAssertNil(link.promoteSecuredChannel(current))
+        XCTAssertTrue(link.activeChannel === current)
+        XCTAssertTrue(link.isSecure)
 
         _ = try? current.finish()
-        _ = try? candidate.finish()
     }
 
-    func testInactiveSecureLinkAdoptsCandidateAndReturnsCurrentChannel() throws {
+    func testLateSecuredCallbackCannotMarkReplacementInsecure() throws {
         let current = try makeActiveChannel()
         let candidate = try makeActiveChannel()
         let link = makeLink(channel: current)
-        link.isSecure = true
-        try current.close().wait()
 
-        guard case .replaced(let previous) = link.adoptChannel(candidate) else {
-            return XCTFail("inactive link must adopt the candidate even when marked secure")
-        }
-        XCTAssertTrue(previous === current)
+        _ = link.promoteSecuredChannel(candidate)
+        XCTAssertFalse(link.markSecured(channel: current))
         XCTAssertTrue(link.activeChannel === candidate)
-        XCTAssertFalse(link.isSecure)
+        XCTAssertTrue(link.isSecure)
 
         _ = try? current.finish()
         _ = try? candidate.finish()

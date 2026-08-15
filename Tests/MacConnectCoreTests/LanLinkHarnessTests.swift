@@ -1,6 +1,7 @@
 @testable import MacConnectCore
 import Network
 import NIOCore
+import NIOEmbedded
 import NIOPosix
 import NIOSSL
 import XCTest
@@ -16,7 +17,7 @@ import XCTest
 /// What this covers that the pure-decision tests cannot: the full wiring
 /// from a UDP announcement through `dialOnQueue` / `handleIdentity` /
 /// `handleSecured` into `DeviceManager`, the reconciler's `.redial` path
-/// preserving an established secure channel without an offline flap, the
+/// promoting a secured candidate without an offline flap, the
 /// `.drop` path
 /// tearing the link down and the next announcement re-establishing it, and
 /// the stale-host path dropping a link whose address went quiet.
@@ -60,12 +61,12 @@ final class LanLinkHarnessTests: XCTestCase {
 
     // MARK: - Helpers
 
-    private func peerIdentity() -> IdentityPayload {
+    private func peerIdentity(name: String = "harness-peer") -> IdentityPayload {
         // MacConnect-symmetric receiver caps: un-probeable by design, the
         // exact shape that made two Macs invisible to the 0.3.6 reconciler.
         IdentityPayload(
             deviceId: peerId,
-            deviceName: "harness-peer",
+            deviceName: name,
             deviceType: .desktop,
             protocolVersion: 7,
             tcpPort: Int(fakePeer.port),
@@ -117,13 +118,27 @@ final class LanLinkHarnessTests: XCTestCase {
         XCTAssertEqual(fakePeer.connectionsAccepted, 1)
     }
 
+    private func makeActiveEmbeddedChannel() throws -> EmbeddedChannel {
+        let channel = EmbeddedChannel()
+        try channel.connect(to: SocketAddress(ipAddress: "127.0.0.1", port: 1716)).wait()
+        return channel
+    }
+
+    @MainActor
+    private func registerSecuredLink(channel: Channel) async throws {
+        provider.handleIdentity(peerIdentity(), channel: channel)
+        provider.handleSecured(channel: channel)
+        try await waitUntil("direct link to attach") {
+            self.device()?.isReachable == true && self.device()?.link?.isSecure == true
+        }
+    }
+
     // MARK: - Tests
 
     /// THE regression: a paired, un-probeable peer whose TCP link went
     /// silent past the hard TTL while it kept announcing must get its link
-    /// re-dialed without replacing an established secure channel: device
-    /// never flaps offline, and the peer sees a fresh connection. Before the
-    /// fix the reconciler returned `.keep` forever and nothing ever re-dialed.
+    /// re-dialed and replaced only after the candidate completes TLS: device
+    /// never flaps offline, and the peer sees a fresh secure connection.
     @MainActor
     func testQuietLinkToAnnouncingPeerIsRedialedInPlace() async throws {
         try await establishLink()
@@ -136,15 +151,78 @@ final class LanLinkHarnessTests: XCTestCase {
         try announce(now: shifted)
         DeviceManager.shared.reconcile(now: shifted)
 
-        try await waitUntil("re-dial to preserve the secure channel") {
+        try await waitUntil("secured candidate promotion") {
             self.fakePeer.connectionsAccepted == 2
                 && self.device()?.link?.isSecure == true
-                && self.device()?.link?.activeChannel === oldChannel
+                && self.device()?.link?.activeChannel !== oldChannel
         }
+        XCTAssertFalse(oldChannel.isActive, "the superseded active channel must close after promotion")
         XCTAssertEqual(
             device()?.isReachable, true,
             "an announcing peer must never flap offline during the in-place re-dial"
         )
+    }
+
+    @MainActor
+    func testPendingCandidateCloseLeavesActiveLinkSecureSendableAndAttached() async throws {
+        let current = try makeActiveEmbeddedChannel()
+        let candidate = try makeActiveEmbeddedChannel()
+        try await registerSecuredLink(channel: current)
+
+        provider.handleIdentity(peerIdentity(name: "fresh-harness-peer"), channel: candidate)
+        try await waitUntil("staged identity freshness update") {
+            self.device()?.name == "fresh-harness-peer"
+        }
+
+        XCTAssertTrue(device()?.link?.activeChannel === current)
+        XCTAssertEqual(device()?.link?.isSecure, true)
+        XCTAssertEqual(
+            device()?.send(NetworkPacket(type: PacketType.ping, body: ["message": .string("still-active")])),
+            true
+        )
+
+        provider.handleClosed(channel: candidate)
+
+        XCTAssertTrue(device()?.link?.activeChannel === current)
+        XCTAssertEqual(device()?.link?.isSecure, true)
+        XCTAssertEqual(device()?.isReachable, true)
+
+        provider.handleClosed(channel: current)
+        _ = try? candidate.finish()
+        _ = try? current.finish()
+    }
+
+    @MainActor
+    func testOnlyLatestSecuredCandidatePromotesAndLateClosesCannotDetachIt() async throws {
+        let current = try makeActiveEmbeddedChannel()
+        let older = try makeActiveEmbeddedChannel()
+        let newest = try makeActiveEmbeddedChannel()
+        try await registerSecuredLink(channel: current)
+
+        provider.handleIdentity(peerIdentity(), channel: older)
+        provider.handleIdentity(peerIdentity(), channel: newest)
+
+        XCTAssertTrue(device()?.link?.activeChannel === current)
+        XCTAssertEqual(device()?.link?.isSecure, true)
+        XCTAssertFalse(older.isActive, "a newer pending candidate must close the older pending candidate")
+
+        provider.handleSecured(channel: older)
+        XCTAssertTrue(device()?.link?.activeChannel === current)
+
+        provider.handleSecured(channel: newest)
+        XCTAssertTrue(device()?.link?.activeChannel === newest)
+        XCTAssertEqual(device()?.link?.isSecure, true)
+        XCTAssertFalse(current.isActive, "the prior active channel must close after secured promotion")
+
+        provider.handleClosed(channel: older)
+        provider.handleClosed(channel: current)
+        XCTAssertTrue(device()?.link?.activeChannel === newest)
+        XCTAssertEqual(device()?.isReachable, true)
+
+        provider.handleClosed(channel: newest)
+        _ = try? older.finish()
+        _ = try? current.finish()
+        _ = try? newest.finish()
     }
 
     /// A paired, un-probeable peer that stopped announcing too is really
