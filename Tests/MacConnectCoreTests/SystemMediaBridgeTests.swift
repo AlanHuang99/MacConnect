@@ -235,7 +235,7 @@ final class SystemMediaBridgeTests: XCTestCase {
     }
 
     @MainActor
-    func testSlowAutomationRefreshIsNotInvalidatedByPollingInterval() async throws {
+    func testSlowAutomationMetadataIsNotInvalidatedAndKeepsFastArtwork() async throws {
         let readers = ControlledAutomationReaders()
         let changed = expectation(description: "slow refresh still applies")
         let bridge = MediaRemoteBridge(
@@ -247,17 +247,92 @@ final class SystemMediaBridgeTests: XCTestCase {
 
         let readersStarted = await readers.waitForStarts(metadata: 1, artwork: 1)
         XCTAssertTrue(readersStarted)
+        await readers.finishArtwork(Data("slow-cover".utf8))
         try await Task.sleep(for: .milliseconds(1100))
         let starts = await readers.startCounts
         XCTAssertEqual(starts.metadata, 1)
         XCTAssertEqual(starts.artwork, 1)
+        XCTAssertEqual(bridge.state, .unavailable)
 
         await readers.finishMetadata(mediaState(title: "Slow Song"))
-        await readers.finishArtwork(Data("slow-cover".utf8))
         await fulfillment(of: [changed], timeout: 0.5)
 
         XCTAssertEqual(bridge.state.title, "Slow Song")
         XCTAssertEqual(bridge.state.artworkData, Data("slow-cover".utf8))
+        bridge.stopPolling()
+    }
+
+    @MainActor
+    func testAutomationArtworkTimeoutEmitsMetadataWithoutArtwork() async {
+        let metadataReader = ControlledAutomationReaders()
+        let artworkReader = CancellationSafeStalledArtworkReader()
+        let changed = expectation(description: "metadata emitted after artwork timeout")
+        changed.assertForOverFulfill = true
+        let bridge = MediaRemoteBridge(
+            automationMetadataReader: { await metadataReader.readMetadata() },
+            automationArtworkReader: { await artworkReader.read() },
+            pollingInterval: .seconds(60)
+        )
+        bridge.onChange = changed.fulfill
+
+        let metadataStarted = await metadataReader.waitForMetadataStarts(1)
+        let artworkStarted = await artworkReader.waitForReads(1)
+        XCTAssertTrue(metadataStarted)
+        XCTAssertTrue(artworkStarted)
+        await metadataReader.finishMetadata(mediaState(title: "Metadata Only"))
+        await fulfillment(of: [changed], timeout: 0.5)
+
+        XCTAssertEqual(bridge.state.title, "Metadata Only")
+        XCTAssertNil(bridge.state.artworkData)
+        bridge.stopPolling()
+    }
+
+    @MainActor
+    func testAutomationArtworkTimeoutContinuesPollingAndRejectsLateArtwork() async {
+        let metadataReader = ControlledAutomationReaders()
+        let artworkReader = CancellationSafeStalledArtworkReader(
+            cancelledArtwork: Data("late-cover".utf8),
+            nextArtwork: Data("current-cover".utf8)
+        )
+        let firstChanged = expectation(description: "timed out refresh")
+        let secondChanged = expectation(description: "next refresh")
+        var states: [MediaRemoteState] = []
+        let bridge = MediaRemoteBridge(
+            automationMetadataReader: { await metadataReader.readMetadata() },
+            automationArtworkReader: { await artworkReader.read() },
+            pollingInterval: .milliseconds(1),
+            artworkTimeout: .milliseconds(10)
+        )
+        bridge.onChange = {
+            states.append(bridge.state)
+            if states.count == 1 {
+                firstChanged.fulfill()
+            } else if states.count == 2 {
+                secondChanged.fulfill()
+            }
+        }
+
+        let firstMetadataStarted = await metadataReader.waitForMetadataStarts(1)
+        let firstArtworkStarted = await artworkReader.waitForReads(1)
+        XCTAssertTrue(firstMetadataStarted)
+        XCTAssertTrue(firstArtworkStarted)
+        await metadataReader.finishMetadata(mediaState(title: "First Song"))
+        await fulfillment(of: [firstChanged], timeout: 0.5)
+
+        XCTAssertEqual(states.first?.title, "First Song")
+        XCTAssertNil(states.first?.artworkData)
+
+        let secondMetadataStarted = await metadataReader.waitForMetadataStarts(2)
+        let secondArtworkStarted = await artworkReader.waitForReads(2)
+        XCTAssertTrue(secondMetadataStarted)
+        XCTAssertTrue(secondArtworkStarted)
+        await metadataReader.finishMetadata(mediaState(title: "Second Song"))
+        await fulfillment(of: [secondChanged], timeout: 0.5)
+
+        XCTAssertEqual(states.count, 2)
+        XCTAssertEqual(states.last?.title, "Second Song")
+        XCTAssertEqual(states.last?.artworkData, Data("current-cover".utf8))
+        XCTAssertFalse(states.contains { $0.artworkData == Data("late-cover".utf8) })
         bridge.stopPolling()
     }
 
@@ -520,6 +595,51 @@ private actor ControlledAutomationReaders {
     func waitForStarts(metadata: Int, artwork: Int) async -> Bool {
         for _ in 0 ..< 1000 {
             if metadataStarts >= metadata, artworkStarts >= artwork {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return false
+    }
+
+    func waitForMetadataStarts(_ count: Int) async -> Bool {
+        for _ in 0 ..< 1000 {
+            if metadataStarts >= count {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return false
+    }
+}
+
+/// Mirrors the production C bridge: cancellation completes a read whose callback never arrived.
+/// `cancelledArtwork` adds an adversarial late value to prove the timeout result still wins.
+private actor CancellationSafeStalledArtworkReader {
+    private let cancelledArtwork: Data?
+    private let nextArtwork: Data?
+    private var reads = 0
+
+    init(cancelledArtwork: Data? = nil, nextArtwork: Data? = nil) {
+        self.cancelledArtwork = cancelledArtwork
+        self.nextArtwork = nextArtwork
+    }
+
+    func read() async -> Data? {
+        reads += 1
+        guard reads == 1 else { return nextArtwork }
+        do {
+            try await Task.sleep(for: .seconds(60))
+            return nil
+        } catch {
+            await Task.yield()
+            return cancelledArtwork
+        }
+    }
+
+    func waitForReads(_ count: Int) async -> Bool {
+        for _ in 0 ..< 1000 {
+            if reads >= count {
                 return true
             }
             try? await Task.sleep(for: .milliseconds(1))

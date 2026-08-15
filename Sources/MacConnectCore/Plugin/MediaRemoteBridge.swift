@@ -296,6 +296,11 @@ final class MediaRemoteBridge: MediaRemoteControlling {
     typealias AutomationMetadataReader = @Sendable () async -> MediaRemoteState?
     typealias AutomationArtworkReader = @Sendable () async -> Data?
 
+    private enum AutomationArtworkResult {
+        case artwork(Data?)
+        case timedOut
+    }
+
     private enum Command: Int {
         case play = 0
         case pause = 1
@@ -413,6 +418,7 @@ final class MediaRemoteBridge: MediaRemoteControlling {
     private let automationMetadataReader: AutomationMetadataReader
     private let automationArtworkReader: AutomationArtworkReader
     private let pollingInterval: Duration
+    private let artworkTimeout: Duration
     private var observers: [NSObjectProtocol] = []
     private var refreshOrchestrator = MediaRemoteRefreshOrchestrator()
     private var pollingTask: Task<Void, Never>?
@@ -426,6 +432,7 @@ final class MediaRemoteBridge: MediaRemoteControlling {
         self.readStrategy = readStrategy
         self.automationMetadataReader = { await MediaRemoteAutomationReader.read() }
         self.pollingInterval = .seconds(1)
+        self.artworkTimeout = .milliseconds(250)
         guard let symbols = Symbols() else {
             self.symbols = nil
             self.automationArtworkReader = { nil }
@@ -453,13 +460,15 @@ final class MediaRemoteBridge: MediaRemoteControlling {
     init(
         automationMetadataReader: @escaping AutomationMetadataReader,
         automationArtworkReader: @escaping AutomationArtworkReader,
-        pollingInterval: Duration = .seconds(1)
+        pollingInterval: Duration = .seconds(1),
+        artworkTimeout: Duration = .milliseconds(250)
     ) {
         self.symbols = nil
         self.readStrategy = .automationHost
         self.automationMetadataReader = automationMetadataReader
         self.automationArtworkReader = automationArtworkReader
         self.pollingInterval = pollingInterval
+        self.artworkTimeout = artworkTimeout
         startPolling()
     }
 
@@ -600,6 +609,34 @@ final class MediaRemoteBridge: MediaRemoteControlling {
         onChange?()
     }
 
+    private nonisolated static func readArtwork(
+        using reader: @escaping AutomationArtworkReader,
+        timeout: Duration
+    ) async -> Data? {
+        await withTaskGroup(of: AutomationArtworkResult.self) { group in
+            group.addTask {
+                await .artwork(reader())
+            }
+            group.addTask {
+                do {
+                    try await Task.sleep(for: timeout)
+                } catch {
+                    return .timedOut
+                }
+                return .timedOut
+            }
+
+            guard let first = await group.next() else { return nil }
+            group.cancelAll()
+            switch first {
+            case .artwork(let data):
+                return data
+            case .timedOut:
+                return nil
+            }
+        }
+    }
+
     private func applyMetadata(_ updatedState: MediaRemoteState, generation: UInt) {
         guard let updatedState = refreshOrchestrator.receiveMetadata(
             updatedState,
@@ -625,11 +662,15 @@ final class MediaRemoteBridge: MediaRemoteControlling {
         let metadataReader = automationMetadataReader
         let artworkReader = automationArtworkReader
         let pollingInterval = pollingInterval
+        let artworkTimeout = artworkTimeout
         pollingTask = Task { [weak self] in
             while !Task.isCancelled {
                 guard let generation = self?.refreshOrchestrator.begin() else { return }
                 async let metadata = metadataReader()
-                async let artwork = artworkReader()
+                async let artwork = Self.readArtwork(
+                    using: artworkReader,
+                    timeout: artworkTimeout
+                )
                 let refresh = await (metadata, artwork)
                 guard !Task.isCancelled else { return }
                 self?.applyAutomationRefresh(
