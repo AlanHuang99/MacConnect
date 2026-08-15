@@ -163,7 +163,7 @@ public final class DeviceManager: ObservableObject {
     // secure, detach on socket close. When a close event never arrives — and
     // display sleep, screen saver, and phone Doze fire no socket-close, no
     // NSWorkspace wake, no NWPathMonitor change, and freeze NIO's read-idle
-    // timer — a device stayed "online" with hours-old battery / now-playing
+    // timer — a device stayed "online" with hours-old battery state
     // forever. This periodic pass re-derives reachability from freshness using
     // the wall clock (Date), which keeps counting across sleep, so it
     // self-corrects without depending on any event firing. `lastSeen` is
@@ -321,10 +321,10 @@ public final class DeviceManager: ObservableObject {
     /// Probeable peers keep the 0.3.6 behaviour: probe past `quiet`, drop
     /// past `ttl` (an unanswered probe is the death signal).
     ///
-    /// Un-probeable peers used to return `.keep` forever — the Mac↔Mac
-    /// hole: two MacConnects advertise battery/mpris as receivers on both
-    /// ends, so neither can probe the other, and after a silent vanish
-    /// both sides kept mutually stale links that blocked every re-dial.
+    /// Un-probeable peers used to return `.keep` forever. After a silent
+    /// vanish, both sides could keep mutually stale links that blocked every
+    /// re-dial. Android media is intentionally controlled-only and does not
+    /// participate in liveness probing.
     /// Now the peer's own discovery announcements substitute for a probe
     /// past the `hardTTL` ceiling: still announcing (`true`) → the peer is
     /// alive but the link is suspect, so re-dial and replace it in place
@@ -378,15 +378,12 @@ public final class DeviceManager: ObservableObject {
         case battery
     }
 
-    /// Which silent liveness probes this peer will actually answer. A probe
-    /// counts only when the plugin is enabled locally for the peer AND the peer
-    /// advertises it — either it sends the state packet (`kdeconnect.battery` /
-    /// `kdeconnect.battery` in its outgoing capabilities) or it accepts the
-    /// request (`kdeconnect.battery.request` in its incoming capabilities). Gating on the peer's
-    /// advertised capabilities, not just our local toggles (which default to
-    /// on), is what stops a paired-but-limited client from being probed with
-    /// packets it ignores and then dropped offline every TTL. Pure and
-    /// nonisolated so it's unit-testable.
+    /// Which silent battery liveness probe this peer will answer. It counts
+    /// only when the plugin is enabled locally and the peer advertises either
+    /// `kdeconnect.battery` in outgoing capabilities or
+    /// `kdeconnect.battery.request` in incoming capabilities. Gating on the
+    /// peer's capabilities prevents probing a limited client with packets it
+    /// ignores. Pure and nonisolated so it's unit-testable.
     nonisolated static func supportedProbes(
         batteryEnabled: Bool,
         peerIncoming: Set<String>,
