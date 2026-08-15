@@ -133,8 +133,8 @@ Test-first changes will cover:
 - a failed, closed, or stale pending candidate leaves the active channel and reachability untouched;
 - provider closures remain outside the provider lock.
 
-Hardware verification will use both authorized Wi-Fi ADB devices. Each phone must independently issue play, pause, previous, next, and volume operations. After each playback transition, both phones must show the same player and the correct central play/pause icon. With a track that exposes artwork, both phones must replace the music-note placeholder with the same cover. Mac logs must show commands from both device names without five-second secure-link replacement churn.
+Hardware verification will use both authorized Wi-Fi ADB devices. Each phone must independently issue play, pause, previous, next, and volume operations. After each playback transition, both phones must show the same player and the correct central play/pause icon. When production MediaRemote exposes artwork bytes, both phones must replace the music-note placeholder with the same cover. If the tested players expose no bytes, both phones must keep the normal placeholder alongside current metadata, and the rendered-art path remains explicitly unexercised rather than inferred. Mac logs must show commands from both device names without five-second secure-link replacement churn.
 
 ## Release
 
-The changelog will receive a v0.4.2 entry dated 2026-08-14. After the implementation pull request and exact merge-commit CI pass, tag v0.4.2 on the verified `main` commit. The existing release workflow will build, sign, notarize, staple, package, publish, and add the signed Sparkle appcast entry.
+The changelog will receive a v0.4.2 entry dated 2026-08-15. After the implementation pull request and exact merge-commit CI pass, tag v0.4.2 on the verified `main` commit. The existing release workflow will build, sign, notarize, staple, package, publish, and add the signed Sparkle appcast entry.

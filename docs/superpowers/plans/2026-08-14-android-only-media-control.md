@@ -422,9 +422,9 @@ Require Mac logs to show MPRIS requests from both `Redmi K60` and the Note12 pee
 
 After play from either phone, dump both UI hierarchies and require `play_button` to describe/render Pause. After pause, require both to describe/render Play. Confirm both still show the same elected Mac player and current track.
 
-- [ ] **Step 5: Verify current-track artwork on both phones**
+- [ ] **Step 5: Verify conditional current-track artwork behavior on both phones**
 
-Choose a Mac track whose MediaRemote state exposes artwork. Open Multimedia control on both phones, require the music-note placeholder to be replaced by an image, and capture both screens. Change to a different-artwork track and require both images to update. Exercise a no-artwork item and require a clean placeholder fallback. Confirm logs show a bounded `transferringAlbumArt` payload request from each phone without repeated transfers for the same cached URL.
+Try real Mac players with covered tracks and inspect the production MediaRemote result. If macOS supplies non-empty artwork bytes, open Multimedia control on both phones, require the music-note placeholder to be replaced by an image, capture both screens, change to a different cover, and confirm one bounded `transferringAlbumArt` payload request per uncached URL on each phone. If no tested player supplies bytes, require the current title plus the normal placeholder on both phones, no invalid URL or payload side effects, and direct evidence of the unavailable MediaRemote result. Record the rendered-art path as unexercised rather than inferring it from the fallback.
 
 - [ ] **Step 6: Restore the installed app state**
 
@@ -612,9 +612,9 @@ Use a deterministic disposable Mac media session. For Note12 and K60 separately,
 
 Keep both Multimedia activities open. Change playback and track state from each phone and from the Mac fixture. Require both screens to update without re-entry and render Play for stopped/paused, Pause for playing.
 
-- [ ] **Step 5: Require artwork transfer and fallback**
+- [ ] **Step 5: Require conditional artwork transfer or verified fallback**
 
-Require a non-empty `albumArtUrl`, one bounded TLS payload request per uncached artwork URL on each phone, rendered cover replacement, a different-cover update, and clean placeholder fallback for a no-art item.
+Try real covered tracks in multiple Mac players. When production MediaRemote supplies non-empty artwork bytes, require a non-empty `albumArtUrl`, one bounded TLS payload request per uncached artwork URL on each phone, rendered cover replacement, a different-cover update, and clean placeholder fallback for a no-art item. When macOS supplies no bytes for every tested player, require the current title plus the normal placeholder on both phones, no invalid URL or payload transfer, and direct logs of the unavailable artwork result. In that case, explicitly report the rendered-art hardware path as unexercised; automated coverage may verify the protocol path but must not be described as an observed Android render.
 
 - [ ] **Step 6: Record evidence and restore safe state**
 
