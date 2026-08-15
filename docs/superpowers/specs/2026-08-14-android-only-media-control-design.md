@@ -13,10 +13,13 @@ Make media control strictly Android to Mac, keep the Android play/pause button s
 - Both phones receive the same elected Mac player, track, volume, and `isPlaying` state.
 - A K60 play/pause tap reaches MacConnect as `kdeconnect.mpris.request` and changes the elected Mac session.
 - The Note12 displays an enabled play/pause control, but repeated touch and keyboard activation produced no MPRIS request at the Mac.
-- MacConnect replaces the secure channel for each phone approximately every five seconds when the phone responds to the repeated identity broadcast.
+- MacConnect v0.4.1 replaces the channel before the candidate TLS handshake finishes approximately every five seconds when a phone responds to the repeated identity broadcast.
 - The Note12 UI starts changing between the play triangle and pause bars when a K60 command changes the Mac state, proving its rendering path is driven correctly by incoming `isPlaying` packets.
+- Hardware testing of the first v0.4.2 candidate proved that rejecting every duplicate before TLS is also incorrect: Android logs a failed handshake every five seconds, both controllers become silent, and the preserved Mac socket is eventually dropped by liveness reconciliation.
+- KDE Connect Android completes TLS before resetting its existing `LanLink`. MacConnect must match that lifecycle by keeping the current secure link available during the candidate handshake, then promoting only the latest successfully secured candidate.
+- The first v0.4.2 candidate also delivered no artwork URL even though a separate MediaRemote probe returned valid JPEG/PNG bytes. Artwork acquisition and metadata must be merged atomically inside the branch process before state fan-out.
 
-The evidence supports a stale Android controller binding caused by repeated link replacement as the Note12 failure mechanism. The implementation will validate that diagnosis by keeping the established secure channel and repeating the same hardware test.
+The evidence rules out both pre-TLS replacement and pre-TLS rejection. The corrected design is post-TLS promotion: never interrupt the active channel for an unverified candidate, never fail Android's candidate handshake merely because an active channel exists, and switch only after the candidate is secure.
 
 ## Scope
 
@@ -27,7 +30,7 @@ The evidence supports a stale Android controller binding caused by repeated link
 - Remove Mac-initiated phone player-list, now-playing, transport, and media-volume requests.
 - Remove the remote MPRIS cache because no Mac UI consumes phone media state.
 - Remove MPRIS as a liveness probe. Battery remains the silent probe for Android phones that advertise it; peers without battery use the existing announcement and hard-TTL path.
-- Keep an active secure same-device channel when a duplicate candidate arrives. Reject and close the candidate before TLS instead of replacing the active link.
+- Keep an active secure same-device channel while the newest duplicate candidate completes TLS. Promote the candidate only after a successful handshake, then close the superseded channel outside provider locks.
 - Continue sending the elected Mac player list and state when Android connects or requests it.
 - Continue broadcasting each real Mac playback-state change to every paired, reachable, MPRIS-enabled Android controller.
 - Advertise native MPRIS album-art payload support, include a stable `kdeconnect://` artwork URL in Mac state, and transfer only the matching current artwork when Android requests it.
@@ -75,13 +78,15 @@ Artwork remains strictly Mac to Android state. It does not restore phone-media s
 
 ### Duplicate channel policy
 
-`LanLink` will decide whether a candidate channel may replace its active channel:
+`LanLinkProvider` stages at most one pending candidate per device while the existing `LanLink` remains active:
 
-- Same channel object: no operation.
-- Active and secure current channel: reject the candidate and preserve the current channel and secure flag.
-- Insecure or inactive current channel: adopt the candidate, reset the secure flag, and return the old channel for deferred closure.
+- The newest identity-bearing candidate replaces only an older pending candidate, never the active secure channel.
+- A pending close or failed handshake removes only that pending candidate and cannot detach the active device.
+- A handshake completion promotes the channel only if it is still the newest pending candidate.
+- Promotion atomically swaps the active channel with `isSecure: true`, updates provider maps, and returns the superseded channel for deferred closure.
+- A late handshake from an older candidate is stale and is closed without changing the active link.
 
-`LanLinkProvider` will update channel maps only after a candidate is adopted. Both rejected candidates and superseded channels are closed outside the provider lock, preserving the existing deadlock protection.
+Pending-candidate and active-channel maps are changed under the provider lock. Older pending candidates, stale secured candidates, and superseded active channels are always closed after releasing the lock, preserving the existing deadlock protection. This mirrors KDE Connect Android's own order: handshake first, link reset second.
 
 The existing host-change, transport-close, TCP keepalive, liveness, and rediscovery mechanisms remain responsible for replacing genuinely dead or moved links.
 
@@ -104,8 +109,8 @@ Its existing cover surface renders the current Mac track artwork after the nativ
 - An artwork request for a stale player or URL is ignored, preventing a previous track's cover from being sent after the song changes.
 - Empty, unreadable, or larger-than-5-MiB artwork is omitted and never opens a payload listener.
 - A failed artwork control-packet send aborts the one-shot payload listener and removes its temporary file.
-- A rejected duplicate channel has no provider mapping, so its close callback cannot detach the active device.
-- A current channel that is inactive or not yet secure can still be replaced immediately.
+- A failed or superseded pending channel cannot detach the active device.
+- Only the latest successfully secured candidate can replace the active channel.
 - Battery-capable Android phones remain probed after quiet periods. Peers without battery use the established announcement and hard-TTL recovery path.
 
 ## Testing
@@ -120,8 +125,9 @@ Test-first changes will cover:
 - only a request matching the current player and artwork URL creates a bounded native album-art transfer packet;
 - artwork acquisition failures leave media transport and metadata available;
 - MPRIS is no longer selected or sent as a liveness probe;
-- a secure active `LanLink` rejects a duplicate candidate without changing the active channel or secure flag;
-- insecure and inactive links still adopt replacement candidates;
+- a secure active `LanLink` remains sendable while a duplicate candidate handshakes;
+- only the latest secured candidate is promoted, with the previous channel closed after the provider lock is released;
+- a failed, closed, or stale pending candidate leaves the active channel and reachability untouched;
 - provider closures remain outside the provider lock.
 
 Hardware verification will use both authorized Wi-Fi ADB devices. Each phone must independently issue play, pause, previous, next, and volume operations. After each playback transition, both phones must show the same player and the correct central play/pause icon. With a track that exposes artwork, both phones must replace the music-note placeholder with the same cover. Mac logs must show commands from both device names without five-second secure-link replacement churn.

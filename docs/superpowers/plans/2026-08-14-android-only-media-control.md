@@ -4,7 +4,7 @@
 
 **Goal:** Make media control strictly Android to Mac, restore reliable Note12 commands, synchronize the play/pause icon, deliver the current Mac track cover to both phones, and publish v0.4.2.
 
-**Architecture:** Reduce `MprisPlugin` to the controlled side of the KDE Connect protocol: receive Android requests and send Mac state. Remove the reverse Mac controller UI, cache, requests, and liveness probe. Stabilize Android controller instances by rejecting duplicate candidate channels while an active secure channel already exists, while retaining replacement for insecure or inactive links. Add optional Mac-to-Android cover state through the existing KDE Connect MPRIS album-art request and TLS payload mechanisms, with exact-current-art validation and no new service.
+**Architecture:** Reduce `MprisPlugin` to the controlled side of the KDE Connect protocol: receive Android requests and send Mac state. Remove the reverse Mac controller UI, cache, requests, and liveness probe. Keep the active secure channel available while a duplicate candidate completes TLS, then atomically promote only the newest secured candidate, matching KDE Connect Android's handshake-before-reset lifecycle. Add optional Mac-to-Android cover state through the existing KDE Connect MPRIS album-art request and TLS payload mechanisms, with exact-current-art validation and no new service.
 
 **Tech Stack:** Swift 5.9, Swift Package Manager, SwiftUI, XCTest, SwiftNIO EmbeddedChannel, KDE Connect MPRIS protocol, macOS MediaRemote and Core Audio, ADB Wi-Fi debugging, GitHub Actions, Developer ID/notarization, Sparkle appcast.
 
@@ -180,6 +180,8 @@ Expected: all pass.
 ---
 
 ### Task 3: Preserve an active secure channel
+
+> Hardware correction: the pre-TLS rejection policy implemented by this task passed unit review but failed both real Android devices. Task 7 replaces it with post-TLS candidate promotion.
 
 **Files:**
 
@@ -383,6 +385,8 @@ Also assemble the universal direct v0.4.2 app, verify arm64 and x86_64 slices, i
 
 ### Task 6: Verify both Android phones end to end
 
+> Initial result at `6f82e2a`: failed. Evidence is recorded in `.superpowers/sdd/2026-08-14-android-only-media-control/task-6-report.md`. Both phones became silent after repeated rejected Android handshakes, liveness reset both links, open activities stopped receiving state, and no artwork URL was emitted. Tasks 7 and 8 correct these verified boundaries before Task 9 repeats the full matrix.
+
 **Files:**
 
 - No source changes expected.
@@ -428,7 +432,159 @@ After validation, leave the tested v0.4.2 build running or install the public re
 
 ---
 
-### Task 7: Publish and verify v0.4.2
+### Task 7: Promote duplicate channels only after TLS
+
+**Files:**
+
+- Modify: `Tests/MacConnectCoreTests/LanLinkReplaceChannelTests.swift`
+- Modify: `Tests/MacConnectCoreTests/LanLinkHarnessTests.swift`
+- Modify: `Sources/MacConnectCore/Network/LanLink.swift`
+- Modify: `Sources/MacConnectCore/Network/LanLinkProvider.swift`
+
+**Interfaces:**
+
+- Produces: a latest-candidate staging record per device, atomic secured-channel promotion, stale-candidate rejection after handshake, and pending-close isolation from the active link.
+- Consumes: identity-bearing channels, `TLSUserEvent.handshakeCompleted`, the existing active `LanLink`, provider channel maps, and deferred close behavior.
+
+- [ ] **Step 1: Replace rejection expectations with failing post-TLS lifecycle tests**
+
+Require that an active secure link stays active and sendable when a distinct identity-bearing candidate is staged. Add provider/harness tests proving:
+
+- staging does not change `activeChannel` or `isSecure`;
+- a candidate that closes or fails before TLS leaves the device attached and active;
+- the latest candidate to complete TLS is promoted with `isSecure == true`;
+- an older candidate that completes later is closed as stale and cannot replace the winner;
+- the superseded active channel closes only after provider locks are released;
+- pending-channel close callbacks cannot detach the active device.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+Run:
+
+```bash
+swift test --filter LanLinkReplaceChannelTests
+swift test --filter LanLinkHarnessTests
+```
+
+Expected: rejection-era assertions fail or the new staging/promotion interfaces do not compile.
+
+- [ ] **Step 3: Stage only the newest candidate without interrupting the active link**
+
+Add provider state for the latest pending identity-bearing channel per device. `handleIdentity` must leave an active secure `LanLink` unchanged, register the newest candidate for its TLS callback, replace only an older pending candidate, update device identity freshness, and close the older pending candidate outside `linkLock`.
+
+Do not set the active link insecure and do not close the new candidate merely because a secure link already exists.
+
+- [ ] **Step 4: Promote atomically from `handleSecured`**
+
+When the newest pending candidate completes TLS, atomically swap it into `LanLink` as already secure, update active/pending channel maps, release `linkLock`, then close the prior active channel. A secured callback for a non-current pending candidate must close that stale channel without changing the link.
+
+`handleClosed` must distinguish pending from active channels. A pending close removes only its pending record. An active close retains the existing detach behavior.
+
+- [ ] **Step 5: Run focused, full, and static checks**
+
+Run:
+
+```bash
+swift test --filter LanLinkReplaceChannelTests
+swift test --filter LanLinkHarnessTests
+swift test
+swiftlint --strict
+swiftformat --lint .
+```
+
+Expected: all pass.
+
+---
+
+### Task 8: Merge live metadata and artwork atomically
+
+**Files:**
+
+- Modify: `Tests/MacConnectCoreTests/SystemMediaBridgeTests.swift`
+- Modify: `Tests/MacConnectCoreTests/MprisPluginTests.swift`
+- Modify: `Sources/MacConnectCore/Plugin/MediaRemoteBridge.swift`
+
+**Interfaces:**
+
+- Produces: a non-overlapping automation refresh that combines one metadata result with one artwork callback for the same generation, then emits one coherent state change.
+- Consumes: `MediaRemoteAutomationReader`, optional MediaRemote artwork functions, the existing one-second polling loop, and `MprisPlugin` state fan-out.
+
+- [ ] **Step 1: Write failing production-path async tests**
+
+Introduce narrow injected metadata and artwork readers used by the real automation refresh. Test:
+
+- metadata and non-empty artwork returned in either completion order produce one state containing both;
+- a slow refresh cannot be invalidated forever by the next one-second tick;
+- nil or missing artwork still emits current metadata and clears an old cover;
+- a changed title/artwork snapshot triggers eligible two-phone fan-out without requiring Android to re-enter Multimedia;
+- cancellation prevents late callbacks from mutating state.
+
+- [ ] **Step 2: Run focused tests and confirm RED**
+
+Run:
+
+```bash
+swift test --filter SystemMediaBridgeTests
+swift test --filter MprisPluginTests
+```
+
+Expected: current callback orchestration cannot satisfy the injected production-path timing cases.
+
+- [ ] **Step 3: Make automation polling sequential and coherent**
+
+For `.automationHost`, await metadata and artwork for the same refresh, combine them, and apply the state once under the generation/cancellation guard. Do not start the next polling iteration until that refresh completes. Use a non-main callback queue for the artwork API, matching the live probe that returned bytes, and resume onto the main actor only to apply state.
+
+Keep legacy callback behavior supported and keep artwork symbols optional. Add bounded debug telemetry for artwork byte count and state broadcast only if it is useful for the hardware gate and contains no private track data.
+
+- [ ] **Step 4: Run focused, full, and static checks**
+
+Run:
+
+```bash
+swift test --filter SystemMediaBridgeTests
+swift test --filter MprisPluginTests
+swift test
+swiftlint --strict
+swiftformat --lint .
+```
+
+Expected: all pass.
+
+---
+
+### Task 9: Repeat the complete two-phone hardware matrix
+
+**Files:**
+
+- No source changes expected.
+
+- [ ] **Step 1: Build and launch the corrected packaged v0.4.2 bundle**
+
+Re-run the universal direct build, stop installed v0.4.1 without replacing it, and launch the corrected worktree `.app`. Confirm both authorized phones attach to the same identity.
+
+- [ ] **Step 2: Require handshake and liveness stability**
+
+Observe at least three five-second candidate cycles and more than one prior 60-second liveness boundary. Require successful candidate TLS promotion with no Android handshake exceptions, no offline flap, and no controller silence.
+
+- [ ] **Step 3: Require commands from each phone independently**
+
+Use a deterministic disposable Mac media session. For Note12 and K60 separately, require action-time logs and actual Mac changes for Play, Pause, Next, Previous, and system volume.
+
+- [ ] **Step 4: Require live button and metadata fan-out**
+
+Keep both Multimedia activities open. Change playback and track state from each phone and from the Mac fixture. Require both screens to update without re-entry and render Play for stopped/paused, Pause for playing.
+
+- [ ] **Step 5: Require artwork transfer and fallback**
+
+Require a non-empty `albumArtUrl`, one bounded TLS payload request per uncached artwork URL on each phone, rendered cover replacement, a different-cover update, and clean placeholder fallback for a no-art item.
+
+- [ ] **Step 6: Record evidence and restore safe state**
+
+Capture screenshots, UI dumps, Mac logs, Android logcat, and exact pass/fail matrix. On pass, leave the corrected branch build running until the public artifact replaces it. On fail, restore installed v0.4.1 and return to implementation without publishing.
+
+---
+
+### Task 10: Publish and verify v0.4.2
 
 **Files:**
 
