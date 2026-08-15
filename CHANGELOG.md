@@ -6,6 +6,18 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+## [0.4.2] - 2026-08-14
+
+### Changed
+
+- Media control is now Android-to-Mac only. KDE Connect Android retains Play, Pause, Previous, Next, synchronized Mac output volume, and mute for the Mac's active system media session; the Mac popover no longer shows a phone-player tile.
+- Android's Play/Pause control now follows the actual Mac playback state, so its icon stays synchronized across connected phones.
+- Android's existing Multimedia cover surface now shows native current-track artwork when macOS provides it, while continuing to use its placeholder when it does not.
+
+### Fixed
+
+- Duplicate secure-link handling now preserves the active Android channel, restoring reliable media commands from the Note12.
+
 ## [0.4.1] - 2026-08-13
 
 ### Added
@@ -58,7 +70,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 - Discovery rebuilds on sleep/wake and network changes (Wi-Fi switch, dock/undock) and stale links are dropped, so peers reconnect without an app restart. ([#21](https://github.com/AlanHuang99/MacConnect/pull/21))
 
-[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/AlanHuang99/MacConnect/compare/v0.4.2...HEAD
+[0.4.2]: https://github.com/AlanHuang99/MacConnect/compare/v0.4.1...v0.4.2
 [0.4.1]: https://github.com/AlanHuang99/MacConnect/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.8...v0.4.0
 [0.3.8]: https://github.com/AlanHuang99/MacConnect/compare/v0.3.7...v0.3.8
