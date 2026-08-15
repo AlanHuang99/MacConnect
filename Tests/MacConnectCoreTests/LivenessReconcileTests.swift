@@ -119,35 +119,29 @@ final class LivenessReconcileTests: XCTestCase {
     }
 
     /// The Codex review case: a paired but limited client that advertises
-    /// neither battery nor mpris must yield no probes — otherwise we'd probe it
+    /// neither battery must yield no probes — otherwise we'd probe it
     /// with packets it ignores and `.drop` it every TTL. No probes -> not
     /// probeable -> `livenessAction` defers to the hard-TTL/announcement path.
     func testLimitedClientWithoutBatteryOrMprisHasNoProbes() {
         let probes = DeviceManager.supportedProbes(
-            batteryEnabled: true, mprisEnabled: true,
+            batteryEnabled: true,
             peerIncoming: [], peerOutgoing: []
         )
         XCTAssertTrue(probes.isEmpty)
     }
 
-    /// Two MacConnects can now probe each other through the controlled side
-    /// of MPRIS. This pins the capability change into liveness behavior so a
-    /// future one-way regression does not silently return Mac peers to the
-    /// slower hard-TTL/announcement recovery path.
-    @MainActor
-    func testMacConnectPeerIsProbeableThroughMpris() {
-        let mpris = MprisPlugin()
+    func testMprisCapabilitiesDoNotCreateAProbe() {
         let probes = DeviceManager.supportedProbes(
-            batteryEnabled: true, mprisEnabled: true,
-            peerIncoming: Set(mpris.incomingCapabilities),
-            peerOutgoing: Set(mpris.outgoingCapabilities)
+            batteryEnabled: false,
+            peerIncoming: [PacketType.mprisRequest],
+            peerOutgoing: [PacketType.mpris]
         )
-        XCTAssertEqual(probes, [.mpris])
+        XCTAssertTrue(probes.isEmpty)
     }
 
     func testPeerAcceptingTheRequestIsProbeable() {
         let probes = DeviceManager.supportedProbes(
-            batteryEnabled: true, mprisEnabled: true,
+            batteryEnabled: true,
             peerIncoming: [PacketType.batteryRequest], peerOutgoing: []
         )
         XCTAssertEqual(probes, [.battery])
@@ -157,7 +151,7 @@ final class LivenessReconcileTests: XCTestCase {
     /// will still answer our request, so that counts too.
     func testPeerAdvertisingProducerCapabilityIsProbeable() {
         let probes = DeviceManager.supportedProbes(
-            batteryEnabled: true, mprisEnabled: false,
+            batteryEnabled: true,
             peerIncoming: [], peerOutgoing: [PacketType.battery]
         )
         XCTAssertEqual(probes, [.battery])
@@ -167,9 +161,9 @@ final class LivenessReconcileTests: XCTestCase {
     /// it, honouring the per-device mute.
     func testLocallyDisabledPluginIsNotProbed() {
         let probes = DeviceManager.supportedProbes(
-            batteryEnabled: false, mprisEnabled: true,
+            batteryEnabled: false,
             peerIncoming: [PacketType.batteryRequest, PacketType.mprisRequest], peerOutgoing: []
         )
-        XCTAssertEqual(probes, [.mpris])
+        XCTAssertTrue(probes.isEmpty)
     }
 }

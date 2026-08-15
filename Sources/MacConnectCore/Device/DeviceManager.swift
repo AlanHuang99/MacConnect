@@ -41,16 +41,8 @@ public final class DeviceManager: ObservableObject {
         }
         device.link = nil
         device.isReachable = false
-        // Clear cached now-playing state so a stale title doesn't keep
-        // showing when the peer reconnects but hasn't pushed a fresh
-        // MPRIS packet yet. Cleared here rather than in unpair only —
-        // every disconnect should invalidate the now-playing cache,
-        // not just an explicit unpair.
-        MprisStore.shared.clear(deviceId: deviceId)
         // Battery is level-triggered (a value stays valid until the next
-        // packet), so a disconnect must invalidate it too — otherwise a
-        // reconnecting peer briefly shows the previous charge. Mirrors the
-        // MPRIS clear above; previously battery alone leaked across links.
+        // packet), so a disconnect must invalidate it before reconnect.
         BatteryStore.shared.clear(deviceId: deviceId)
         objectWillChange.send()
     }
@@ -78,7 +70,6 @@ public final class DeviceManager: ObservableObject {
         device.isPaired = false
         device.pinMismatch = false
         device.presentedFingerprint = nil
-        MprisStore.shared.clear(deviceId: device.id)
         device.send(PairPacketBuilder.response(accept: false))
         objectWillChange.send()
     }
@@ -185,14 +176,13 @@ public final class DeviceManager: ObservableObject {
     /// A reachable, paired peer silent this long — despite us probing it — is
     /// treated as gone and its link dropped so discovery re-establishes it.
     public static let livenessTTL: TimeInterval = 60
-    /// A reachable, paired peer quiet at least this long gets a silent probe
-    /// (battery / mpris request — answered by the peer but never surfaced as a
-    /// notification). Chatty links stay above this threshold on their own.
+    /// A reachable, paired peer quiet at least this long gets a silent battery
+    /// probe, answered by the peer without a notification. Chatty links stay
+    /// above this threshold on their own.
     public static let probeQuietThreshold: TimeInterval = 15
-    /// Hard ceiling of TCP silence for a peer we cannot probe — notably
-    /// another MacConnect, whose battery/mpris capabilities are
-    /// receiver-only on both sides, so neither Mac has a silent probe the
-    /// other will answer. Past this ceiling the peer's own UDP identity
+    /// Hard ceiling of TCP silence for a peer we cannot probe. Android media
+    /// is intentionally controlled-only, so it is not a liveness probe. Past
+    /// this ceiling the peer's own UDP identity
     /// announcements decide: still announcing → re-dial the suspect link
     /// in place; gone quiet too → drop it (see `livenessAction`). Longer
     /// than `livenessTTL` because with no probe to solicit a reply,
@@ -247,11 +237,10 @@ public final class DeviceManager: ObservableObject {
             // Probe eligibility is the peer's advertised capabilities ∩ our
             // local toggles — NOT our toggles alone (which default to on). A
             // paired-but-limited client that advertises neither battery nor
-            // mpris yields no probes, so `livenessAction` returns `.keep` and
+            // media yields no probes, so `livenessAction` returns `.keep` and
             // never flaps it offline for ignoring packets it never claimed.
             let probes = Self.supportedProbes(
                 batteryEnabled: Settings.shared.isPluginEnabled("battery", forDevice: device.id),
-                mprisEnabled: Settings.shared.isPluginEnabled("mpris", forDevice: device.id),
                 peerIncoming: Set(device.incomingCapabilities),
                 peerOutgoing: Set(device.outgoingCapabilities)
             )
@@ -292,7 +281,6 @@ public final class DeviceManager: ObservableObject {
         for id in evictIds {
             devices.removeValue(forKey: id)
             BatteryStore.shared.clear(deviceId: id)
-            MprisStore.shared.clear(deviceId: id)
         }
         // Tick so "last seen Nm ago" advances even when nothing else changed.
         objectWillChange.send()
@@ -307,20 +295,17 @@ public final class DeviceManager: ObservableObject {
         device.isReachable = false
         device.link = nil
         BatteryStore.shared.clear(deviceId: device.id)
-        MprisStore.shared.clear(deviceId: device.id)
         LanLinkProvider.shared.dropLink(deviceId: device.id)
     }
 
-    /// Send the precomputed silent liveness probes — `battery` / `mpris`
-    /// request packets the peer answers without raising a banner (the same
-    /// ones the popover sends on open), which is why this works where the
+    /// Send the precomputed silent battery probe, which the peer answers
+    /// without raising a banner. This works where the
     /// reverted `_keepalive` ping did not. The peer's reply flows back through
     /// `dispatch`, refreshing `lastSeen` and proving the link is alive. The set
     /// is already filtered to plugins enabled locally AND advertised by the
     /// peer (see `supportedProbes`), so every probe here can actually land.
     private func sendLivenessProbe(_ probes: Set<ProbeKind>, to device: Device) {
         if probes.contains(.battery) { BatteryPlugin.requestUpdate(from: device) }
-        if probes.contains(.mpris) { MprisPlugin.requestNowPlaying(from: device) }
     }
 
     enum LivenessAction: Equatable {
@@ -386,27 +371,24 @@ public final class DeviceManager: ObservableObject {
     func removeDevice(id: String) {
         devices.removeValue(forKey: id)
         BatteryStore.shared.clear(deviceId: id)
-        MprisStore.shared.clear(deviceId: id)
         objectWillChange.send()
     }
 
     enum ProbeKind: Hashable {
         case battery
-        case mpris
     }
 
     /// Which silent liveness probes this peer will actually answer. A probe
     /// counts only when the plugin is enabled locally for the peer AND the peer
     /// advertises it — either it sends the state packet (`kdeconnect.battery` /
-    /// `kdeconnect.mpris` in its outgoing capabilities) or it accepts the
-    /// request (`*.request` in its incoming capabilities). Gating on the peer's
+    /// `kdeconnect.battery` in its outgoing capabilities) or it accepts the
+    /// request (`kdeconnect.battery.request` in its incoming capabilities). Gating on the peer's
     /// advertised capabilities, not just our local toggles (which default to
     /// on), is what stops a paired-but-limited client from being probed with
     /// packets it ignores and then dropped offline every TTL. Pure and
     /// nonisolated so it's unit-testable.
     nonisolated static func supportedProbes(
         batteryEnabled: Bool,
-        mprisEnabled: Bool,
         peerIncoming: Set<String>,
         peerOutgoing: Set<String>
     ) -> Set<ProbeKind> {
@@ -415,11 +397,6 @@ public final class DeviceManager: ObservableObject {
            peerIncoming.contains(PacketType.batteryRequest) || peerOutgoing.contains(PacketType.battery)
         {
             probes.insert(.battery)
-        }
-        if mprisEnabled,
-           peerIncoming.contains(PacketType.mprisRequest) || peerOutgoing.contains(PacketType.mpris)
-        {
-            probes.insert(.mpris)
         }
         return probes
     }

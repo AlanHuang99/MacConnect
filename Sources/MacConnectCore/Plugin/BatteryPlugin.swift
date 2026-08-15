@@ -67,7 +67,7 @@ public final class BatteryStore: ObservableObject {
 
     /// Drop the cached charge for a peer. Called when a link goes away so a
     /// disconnected (or reconnecting) device doesn't keep showing a stale
-    /// percentage. Symmetric with `MprisStore.clear(deviceId:)`.
+    /// percentage.
     public func clear(deviceId: String) {
         states[deviceId] = nil
     }

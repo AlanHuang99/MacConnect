@@ -3,10 +3,6 @@ import XCTest
 
 @MainActor
 final class MprisPluginTests: XCTestCase {
-    override func tearDown() {
-        super.tearDown()
-    }
-
     func testCapabilitiesAdvertiseAndroidControlledDirection() {
         let plugin = makePlugin()
 
