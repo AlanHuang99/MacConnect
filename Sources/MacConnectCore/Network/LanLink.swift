@@ -2,6 +2,12 @@ import Foundation
 import NIOCore
 
 public final class LanLink: @unchecked Sendable {
+    public enum ChannelAdoption {
+        case unchanged
+        case rejected
+        case replaced(previous: Channel)
+    }
+
     public let deviceId: String
 
     private let lock = NSLock()
@@ -47,8 +53,7 @@ public final class LanLink: @unchecked Sendable {
         return channel
     }
 
-    /// Replace the active channel with a newer connection and return the
-    /// superseded channel for the caller to close (or `nil` if unchanged).
+    /// Atomically decide whether a candidate may replace the active channel.
     /// The old channel is intentionally NOT closed here — see below.
     ///
     /// `_isSecure` is reset to `false` because the new channel has not
@@ -67,15 +72,20 @@ public final class LanLink: @unchecked Sendable {
     /// event-loop thread — firing `channelInactive` → `onClose` →
     /// `handleClosed`, which takes that same non-recursive `linkLock`.
     /// Closing inline therefore self-deadlocks the discovery queue. The
-    /// caller closes the returned channel only after releasing `linkLock`.
-    @discardableResult
-    public func replaceChannel(with newChannel: Channel) -> Channel? {
+    /// caller closes a replaced channel only after releasing `linkLock`.
+    public func adoptChannel(_ newChannel: Channel) -> ChannelAdoption {
         lock.lock()
+        defer { lock.unlock() }
         let old = channel
+        if old === newChannel {
+            return .unchanged
+        }
+        if _isSecure, old.isActive {
+            return .rejected
+        }
         channel = newChannel
         _isSecure = false
-        lock.unlock()
-        return old !== newChannel ? old : nil
+        return .replaced(previous: old)
     }
 
     public func deliverPacket(_ packet: NetworkPacket) {

@@ -484,30 +484,34 @@ public final class LanLinkProvider: @unchecked Sendable {
         Log.net.info("Identity from \(identity.deviceName, privacy: .public) (\(identity.deviceId, privacy: .public))")
         linkLock.lock()
         if let existing = linksByDeviceId[identity.deviceId] {
-            // Already have a link for this device. Replace the underlying
-            // channel with the newer one so sends always go on the most
-            // recent connection. Both peers do this independently and end
-            // up agreeing on the same active channel.
-            let oldChannel = existing.replaceChannel(with: channel)
-            if let oldChannel {
+            switch existing.adoptChannel(channel) {
+            case .unchanged:
+                linkLock.unlock()
+                return
+            case .rejected:
+                linkLock.unlock()
+                channel.close(promise: nil)
+                Log.net.info("Preserved secure channel for existing link \(identity.deviceId, privacy: .public)")
+                return
+            case let .replaced(previous: oldChannel):
                 channelToDeviceId.removeValue(forKey: ObjectIdentifier(oldChannel))
+                channelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
+                linkLock.unlock()
+                // Close the superseded channel OUTSIDE linkLock. NIO can run this
+                // close synchronously, firing channelInactive -> onClose ->
+                // handleClosed on this thread; handleClosed takes linkLock, so
+                // closing while we still held it self-deadlocked the discovery
+                // queue (every peer reconnect race froze discovery on both Macs,
+                // surfacing as the app silently finding no devices). The old
+                // channel's deviceId mapping is already removed above, so
+                // handleClosed no-ops for it.
+                oldChannel.close(promise: nil)
+                Log.net.info("Replaced channel for existing link \(identity.deviceId, privacy: .public)")
+                Task { @MainActor in
+                    _ = DeviceManager.shared.upsert(identity: identity)
+                }
+                return
             }
-            channelToDeviceId[ObjectIdentifier(channel)] = identity.deviceId
-            linkLock.unlock()
-            // Close the superseded channel OUTSIDE linkLock. NIO can run this
-            // close synchronously, firing channelInactive -> onClose ->
-            // handleClosed on this thread; handleClosed takes linkLock, so
-            // closing while we still held it self-deadlocked the discovery
-            // queue (every peer reconnect race froze discovery on both Macs,
-            // surfacing as the app silently finding no devices). The old
-            // channel's deviceId mapping is already removed above, so
-            // handleClosed no-ops for it.
-            oldChannel?.close(promise: nil)
-            Log.net.info("Replaced channel for existing link \(identity.deviceId, privacy: .public)")
-            Task { @MainActor in
-                _ = DeviceManager.shared.upsert(identity: identity)
-            }
-            return
         }
         let link = LanLink(
             deviceId: identity.deviceId,

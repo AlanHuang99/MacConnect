@@ -16,7 +16,8 @@ import XCTest
 /// What this covers that the pure-decision tests cannot: the full wiring
 /// from a UDP announcement through `dialOnQueue` / `handleIdentity` /
 /// `handleSecured` into `DeviceManager`, the reconciler's `.redial` path
-/// replacing a live channel without an offline flap, the `.drop` path
+/// preserving an established secure channel without an offline flap, the
+/// `.drop` path
 /// tearing the link down and the next announcement re-establishing it, and
 /// the stale-host path dropping a link whose address went quiet.
 ///
@@ -120,9 +121,9 @@ final class LanLinkHarnessTests: XCTestCase {
 
     /// THE regression: a paired, un-probeable peer whose TCP link went
     /// silent past the hard TTL while it kept announcing must get its link
-    /// re-dialed and replaced in place — device never flaps offline, and
-    /// the peer sees a fresh connection. Before the fix the reconciler
-    /// returned `.keep` forever and nothing ever re-dialed.
+    /// re-dialed without replacing an established secure channel: device
+    /// never flaps offline, and the peer sees a fresh connection. Before the
+    /// fix the reconciler returned `.keep` forever and nothing ever re-dialed.
     @MainActor
     func testQuietLinkToAnnouncingPeerIsRedialedInPlace() async throws {
         try await establishLink()
@@ -135,10 +136,10 @@ final class LanLinkHarnessTests: XCTestCase {
         try announce(now: shifted)
         DeviceManager.shared.reconcile(now: shifted)
 
-        try await waitUntil("re-dial to replace the channel") {
+        try await waitUntil("re-dial to preserve the secure channel") {
             self.fakePeer.connectionsAccepted == 2
                 && self.device()?.link?.isSecure == true
-                && self.device()?.link?.activeChannel !== oldChannel
+                && self.device()?.link?.activeChannel === oldChannel
         }
         XCTAssertEqual(
             device()?.isReachable, true,
