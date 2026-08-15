@@ -182,6 +182,134 @@ final class SystemMediaBridgeTests: XCTestCase {
         XCTAssertNil(merged.artworkData)
     }
 
+    @MainActor
+    func testAutomationRefreshAppliesArtworkAndMetadataOnceWhenArtworkFinishesFirst() async {
+        let readers = ControlledAutomationReaders()
+        let changed = expectation(description: "one coherent state change")
+        changed.assertForOverFulfill = true
+        let bridge = MediaRemoteBridge(
+            automationMetadataReader: { await readers.readMetadata() },
+            automationArtworkReader: { await readers.readArtwork() },
+            pollingInterval: .seconds(60)
+        )
+        bridge.onChange = changed.fulfill
+
+        let readersStarted = await readers.waitForStarts(metadata: 1, artwork: 1)
+        XCTAssertTrue(readersStarted)
+        await readers.finishArtwork(Data("cover".utf8))
+        await Task.yield()
+        XCTAssertEqual(bridge.state, .unavailable)
+
+        await readers.finishMetadata(mediaState(title: "Song"))
+        await fulfillment(of: [changed], timeout: 0.5)
+
+        XCTAssertEqual(bridge.state.title, "Song")
+        XCTAssertEqual(bridge.state.artworkData, Data("cover".utf8))
+        bridge.stopPolling()
+    }
+
+    @MainActor
+    func testAutomationRefreshAppliesArtworkAndMetadataOnceWhenMetadataFinishesFirst() async {
+        let readers = ControlledAutomationReaders()
+        let changed = expectation(description: "one coherent state change")
+        changed.assertForOverFulfill = true
+        let bridge = MediaRemoteBridge(
+            automationMetadataReader: { await readers.readMetadata() },
+            automationArtworkReader: { await readers.readArtwork() },
+            pollingInterval: .seconds(60)
+        )
+        bridge.onChange = changed.fulfill
+
+        let readersStarted = await readers.waitForStarts(metadata: 1, artwork: 1)
+        XCTAssertTrue(readersStarted)
+        await readers.finishMetadata(mediaState(title: "Song"))
+        await Task.yield()
+        XCTAssertEqual(bridge.state, .unavailable)
+
+        await readers.finishArtwork(Data("cover".utf8))
+        await fulfillment(of: [changed], timeout: 0.5)
+
+        XCTAssertEqual(bridge.state.title, "Song")
+        XCTAssertEqual(bridge.state.artworkData, Data("cover".utf8))
+        bridge.stopPolling()
+    }
+
+    @MainActor
+    func testSlowAutomationRefreshIsNotInvalidatedByPollingInterval() async throws {
+        let readers = ControlledAutomationReaders()
+        let changed = expectation(description: "slow refresh still applies")
+        let bridge = MediaRemoteBridge(
+            automationMetadataReader: { await readers.readMetadata() },
+            automationArtworkReader: { await readers.readArtwork() },
+            pollingInterval: .seconds(1)
+        )
+        bridge.onChange = changed.fulfill
+
+        let readersStarted = await readers.waitForStarts(metadata: 1, artwork: 1)
+        XCTAssertTrue(readersStarted)
+        try await Task.sleep(for: .milliseconds(1100))
+        let starts = await readers.startCounts
+        XCTAssertEqual(starts.metadata, 1)
+        XCTAssertEqual(starts.artwork, 1)
+
+        await readers.finishMetadata(mediaState(title: "Slow Song"))
+        await readers.finishArtwork(Data("slow-cover".utf8))
+        await fulfillment(of: [changed], timeout: 0.5)
+
+        XCTAssertEqual(bridge.state.title, "Slow Song")
+        XCTAssertEqual(bridge.state.artworkData, Data("slow-cover".utf8))
+        bridge.stopPolling()
+    }
+
+    @MainActor
+    func testNilAutomationArtworkEmitsMetadataAndClearsOldCover() async {
+        let readers = ControlledAutomationReaders()
+        let changed = expectation(description: "old and new coherent states")
+        changed.expectedFulfillmentCount = 2
+        let bridge = MediaRemoteBridge(
+            automationMetadataReader: { await readers.readMetadata() },
+            automationArtworkReader: { await readers.readArtwork() },
+            pollingInterval: .milliseconds(1)
+        )
+        bridge.onChange = changed.fulfill
+
+        let firstReadersStarted = await readers.waitForStarts(metadata: 1, artwork: 1)
+        XCTAssertTrue(firstReadersStarted)
+        await readers.finishMetadata(mediaState(title: "Old Song"))
+        await readers.finishArtwork(Data("old-cover".utf8))
+        let secondReadersStarted = await readers.waitForStarts(metadata: 2, artwork: 2)
+        XCTAssertTrue(secondReadersStarted)
+        await readers.finishArtwork(nil)
+        await readers.finishMetadata(mediaState(title: "New Song"))
+        await fulfillment(of: [changed], timeout: 0.5)
+
+        XCTAssertEqual(bridge.state.title, "New Song")
+        XCTAssertNil(bridge.state.artworkData)
+        bridge.stopPolling()
+    }
+
+    @MainActor
+    func testCancellingAutomationPollingRejectsLateReaderCompletions() async throws {
+        let readers = ControlledAutomationReaders()
+        var changeCount = 0
+        let bridge = MediaRemoteBridge(
+            automationMetadataReader: { await readers.readMetadata() },
+            automationArtworkReader: { await readers.readArtwork() },
+            pollingInterval: .seconds(60)
+        )
+        bridge.onChange = { changeCount += 1 }
+
+        let readersStarted = await readers.waitForStarts(metadata: 1, artwork: 1)
+        XCTAssertTrue(readersStarted)
+        bridge.stopPolling()
+        await readers.finishMetadata(mediaState(title: "Late Song"))
+        await readers.finishArtwork(Data("late-cover".utf8))
+        try await Task.sleep(for: .milliseconds(20))
+
+        XCTAssertEqual(bridge.state, .unavailable)
+        XCTAssertEqual(changeCount, 0)
+    }
+
     func testVolumeAddressStrategyFallsBackWhenMainVolumeIsUnreadable() {
         XCTAssertEqual(
             SystemVolumeAddressStrategy.preferredElements(
@@ -344,6 +472,59 @@ final class SystemMediaBridgeTests: XCTestCase {
         XCTAssertNil(state.title)
         XCTAssertNil(state.artist)
         XCTAssertEqual(state.album, "Album")
+    }
+}
+
+private func mediaState(title: String, playerName: String = "Mac") -> MediaRemoteState {
+    MediaRemoteState(
+        playerName: playerName,
+        title: title,
+        artist: "Artist",
+        album: "Album",
+        artworkData: nil,
+        isPlaying: true,
+        isAvailable: true,
+        lengthMs: 120_000,
+        positionMs: 1000
+    )
+}
+
+private actor ControlledAutomationReaders {
+    private var metadataContinuations: [CheckedContinuation<MediaRemoteState?, Never>] = []
+    private var artworkContinuations: [CheckedContinuation<Data?, Never>] = []
+    private(set) var metadataStarts = 0
+    private(set) var artworkStarts = 0
+
+    var startCounts: (metadata: Int, artwork: Int) {
+        (metadataStarts, artworkStarts)
+    }
+
+    func readMetadata() async -> MediaRemoteState? {
+        metadataStarts += 1
+        return await withCheckedContinuation { metadataContinuations.append($0) }
+    }
+
+    func readArtwork() async -> Data? {
+        artworkStarts += 1
+        return await withCheckedContinuation { artworkContinuations.append($0) }
+    }
+
+    func finishMetadata(_ state: MediaRemoteState?) {
+        metadataContinuations.removeFirst().resume(returning: state)
+    }
+
+    func finishArtwork(_ data: Data?) {
+        artworkContinuations.removeFirst().resume(returning: data)
+    }
+
+    func waitForStarts(metadata: Int, artwork: Int) async -> Bool {
+        for _ in 0 ..< 1000 {
+            if metadataStarts >= metadata, artworkStarts >= artwork {
+                return true
+            }
+            try? await Task.sleep(for: .milliseconds(1))
+        }
+        return false
     }
 }
 
