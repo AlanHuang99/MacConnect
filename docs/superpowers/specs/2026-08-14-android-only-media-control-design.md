@@ -18,6 +18,7 @@ Make media control strictly Android to Mac, keep the Android play/pause button s
 - Hardware testing of the first v0.4.2 candidate proved that rejecting every duplicate before TLS is also incorrect: Android logs a failed handshake every five seconds, both controllers become silent, and the preserved Mac socket is eventually dropped by liveness reconciliation.
 - KDE Connect Android completes TLS before resetting its existing `LanLink`. MacConnect must match that lifecycle by keeping the current secure link available during the candidate handshake, then promoting only the latest successfully secured candidate.
 - The first v0.4.2 candidate also delivered no artwork URL even though a separate MediaRemote probe returned valid JPEG/PNG bytes. Artwork acquisition and metadata must be merged atomically inside the branch process before state fan-out.
+- Hardware testing after the atomic merge proved that MediaRemote can omit the artwork callback entirely. An unbounded wait then prevents even valid metadata from becoming available, so Android reports `No players found` and cannot emit transport actions. Artwork acquisition must have a short cancellation-safe deadline; metadata remains authoritative and publishes with a placeholder when that deadline expires.
 
 The evidence rules out both pre-TLS replacement and pre-TLS rejection. The corrected design is post-TLS promotion: never interrupt the active channel for an unverified candidate, never fail Android's candidate handshake merely because an active channel exists, and switch only after the candidate is secure.
 
@@ -108,6 +109,7 @@ Its existing cover surface renders the current Mac track artwork after the nativ
 - A phone that does not advertise the controller capabilities receives no local media state.
 - An artwork request for a stale player or URL is ignored, preventing a previous track's cover from being sent after the song changes.
 - Empty, unreadable, or larger-than-5-MiB artwork is omitted and never opens a payload listener.
+- An artwork callback that misses its deadline is treated as no artwork for that refresh. Its late result is ignored, metadata still publishes, and the next polling iteration continues.
 - A failed artwork control-packet send aborts the one-shot payload listener and removes its temporary file.
 - A failed or superseded pending channel cannot detach the active device.
 - Only the latest successfully secured candidate can replace the active channel.
@@ -124,6 +126,7 @@ Test-first changes will cover:
 - artwork data produces a stable allowed-scheme `albumArtUrl`, while absent or oversized data produces no URL;
 - only a request matching the current player and artwork URL creates a bounded native album-art transfer packet;
 - artwork acquisition failures leave media transport and metadata available;
+- a missing artwork callback times out without blocking metadata, late completion, cancellation, or the next refresh;
 - MPRIS is no longer selected or sent as a liveness probe;
 - a secure active `LanLink` remains sendable while a duplicate candidate handshakes;
 - only the latest secured candidate is promoted, with the previous channel closed after the provider lock is released;

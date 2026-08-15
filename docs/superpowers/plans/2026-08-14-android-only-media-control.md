@@ -552,6 +552,44 @@ Expected: all pass.
 
 ---
 
+### Task 8A: Bound a missing artwork callback
+
+> Hardware recovery amendment: the first post-Task-8 launch received both phones' player-list requests, but Android showed `No players found`. The deterministic Chrome session was valid in a direct MediaRemote metadata read. The production refresh never published it because the optional artwork callback did not return.
+
+**Files:**
+
+- Modify: `Tests/MacConnectCoreTests/SystemMediaBridgeTests.swift`
+- Modify: `Sources/MacConnectCore/Plugin/MediaRemoteBridge.swift`
+
+**Interfaces:**
+
+- Produces: a cancellation-safe deadline for optional artwork acquisition and continued coherent metadata polling after a missed callback.
+- Consumes: the Task 8 non-overlapping atomic refresh, artwork-read cancellation, and nil-art placeholder behavior.
+
+- [ ] **Step 1: Write failing timeout and recovery tests**
+
+Exercise the production automation loop with metadata that completes and artwork that never completes. Require current metadata to publish with nil artwork after the deadline, require a second polling iteration to start, and require a late first callback to have no effect. Preserve the existing fast-artwork atomic and stop-cancellation guarantees.
+
+- [ ] **Step 2: Implement the smallest bounded artwork wait**
+
+Give optional artwork acquisition a short injectable deadline. On expiry, cancel and drain the artwork read safely, merge nil artwork with that iteration's metadata, and continue polling. A completion may win or lose the deadline exactly once; it must never double-resume or overwrite a newer generation.
+
+- [ ] **Step 3: Run focused, full, and static checks**
+
+Run:
+
+```bash
+swift test --filter SystemMediaBridgeTests
+swift test --filter MprisPluginTests
+swift test
+swiftlint --strict
+swiftformat --lint .
+```
+
+Expected: all pass.
+
+---
+
 ### Task 9: Repeat the complete two-phone hardware matrix
 
 **Files:**
