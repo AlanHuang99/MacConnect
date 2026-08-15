@@ -6,7 +6,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
-## [0.4.2] - 2026-08-14
+## [0.4.2] - 2026-08-15
 
 ### Changed
 
@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Duplicate secure-link handling now preserves the active Android channel instead of replacing it.
+- Duplicate secure-link handling now promotes only fully secured candidates without dropping active connectivity.
 
 ## [0.4.1] - 2026-08-13
 
