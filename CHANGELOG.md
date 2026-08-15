@@ -16,7 +16,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ### Fixed
 
-- Duplicate secure-link handling now preserves the active Android channel, restoring reliable media commands from the Note12.
+- Duplicate secure-link handling now preserves the active Android channel instead of replacing it.
 
 ## [0.4.1] - 2026-08-13
 
