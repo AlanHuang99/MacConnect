@@ -65,6 +65,58 @@ final class MprisArtworkPayloadSenderTests: XCTestCase {
         XCTAssertEqual(try Data(contentsOf: transport.fileURLs[1]), Data("second".utf8))
     }
 
+    func testEmptyArtworkDoesNotCreateFileOrStartListener() throws {
+        let transport = FakeArtworkTransport(port: 1744)
+        let packets = ArtworkPacketRecorder(sendSucceeds: true)
+        let sender = MprisArtworkPayloadSender(
+            temporaryDirectory: temporaryDirectory,
+            startPayload: transport.start,
+            sendPacket: packets.send
+        )
+
+        sender.send(fixtureTransfer(data: Data()), to: makeDevice(id: "phone"))
+
+        XCTAssertTrue(transport.fileURLs.isEmpty)
+        XCTAssertTrue(packets.packets.isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: temporaryDirectory.path).isEmpty)
+    }
+
+    func testOversizedArtworkDoesNotCreateFileOrStartListener() throws {
+        let transport = FakeArtworkTransport(port: 1744)
+        let packets = ArtworkPacketRecorder(sendSucceeds: true)
+        let sender = MprisArtworkPayloadSender(
+            temporaryDirectory: temporaryDirectory,
+            startPayload: transport.start,
+            sendPacket: packets.send
+        )
+        let oversized = Data(repeating: 0x41, count: 5 * 1024 * 1024 + 1)
+
+        sender.send(fixtureTransfer(data: oversized), to: makeDevice(id: "phone"))
+
+        XCTAssertTrue(transport.fileURLs.isEmpty)
+        XCTAssertTrue(packets.packets.isEmpty)
+        XCTAssertTrue(try FileManager.default.contentsOfDirectory(atPath: temporaryDirectory.path).isEmpty)
+    }
+
+    func testPayloadErrorCleansUpTemporaryFile() async throws {
+        let transport = FakeArtworkTransport(port: 1744)
+        let sender = MprisArtworkPayloadSender(
+            temporaryDirectory: temporaryDirectory,
+            startPayload: transport.start,
+            sendPacket: ArtworkPacketRecorder(sendSucceeds: true).send
+        )
+
+        sender.send(fixtureTransfer(), to: makeDevice(id: "phone"))
+
+        let fileURL = try XCTUnwrap(transport.fileURLs.first)
+        XCTAssertTrue(FileManager.default.fileExists(atPath: fileURL.path))
+
+        transport.fail(at: 0)
+        await Task.yield()
+
+        XCTAssertFalse(FileManager.default.fileExists(atPath: fileURL.path))
+    }
+
     func testBindFailureCleansUpWithoutSendingControlPacket() {
         let transport = FakeArtworkTransport(port: 0)
         let packets = ArtworkPacketRecorder(sendSucceeds: true)
@@ -125,7 +177,7 @@ private final class FakeArtworkTransport {
     let port: UInt16
     private(set) var fileURLs: [URL] = []
     private(set) var peerDeviceIds: [String] = []
-    private(set) var completions: [@Sendable () -> Void] = []
+    private(set) var completions: [@Sendable (MprisArtworkPayloadOutcome) -> Void] = []
     private(set) var cancelCount = 0
 
     init(port: UInt16) {
@@ -135,7 +187,7 @@ private final class FakeArtworkTransport {
     func start(
         fileURL: URL,
         peerDeviceId: String,
-        onFinished: @escaping @Sendable () -> Void
+        onFinished: @escaping @Sendable (MprisArtworkPayloadOutcome) -> Void
     ) -> MprisArtworkPayloadListener {
         fileURLs.append(fileURL)
         peerDeviceIds.append(peerDeviceId)
@@ -146,7 +198,11 @@ private final class FakeArtworkTransport {
     }
 
     func finish(at index: Int) {
-        completions[index]()
+        completions[index](.success)
+    }
+
+    func fail(at index: Int) {
+        completions[index](.failure)
     }
 }
 

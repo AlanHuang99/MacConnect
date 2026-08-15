@@ -64,6 +64,124 @@ final class SystemMediaBridgeTests: XCTestCase {
         XCTAssertTrue(generation.isCurrent(second))
     }
 
+    func testRefreshOrchestratorStagesArtworkUntilMatchingMetadataArrives() throws {
+        var orchestrator = MediaRemoteRefreshOrchestrator()
+        let generation = orchestrator.begin()
+        let oldState = MediaRemoteState(
+            playerName: "Old Player",
+            title: "Old Song",
+            artist: nil,
+            album: nil,
+            artworkData: Data("old-cover".utf8),
+            isPlaying: false,
+            isAvailable: true,
+            lengthMs: nil,
+            positionMs: nil
+        )
+        let newArtwork = Data("new-cover".utf8)
+
+        XCTAssertNil(orchestrator.receiveArtwork(
+            newArtwork,
+            currentState: oldState,
+            generation: generation
+        ))
+
+        let merged = try XCTUnwrap(orchestrator.receiveMetadata(MediaRemoteState(
+            playerName: "New Player",
+            title: "New Song",
+            artist: "Artist",
+            album: "Album",
+            artworkData: nil,
+            isPlaying: true,
+            isAvailable: true,
+            lengthMs: 200_000,
+            positionMs: 12000
+        ), generation: generation))
+
+        XCTAssertEqual(merged.title, "New Song")
+        XCTAssertEqual(merged.artworkData, newArtwork)
+    }
+
+    func testRefreshOrchestratorAppliesArtworkAfterMetadataArrives() throws {
+        var orchestrator = MediaRemoteRefreshOrchestrator()
+        let generation = orchestrator.begin()
+        let metadata = try XCTUnwrap(orchestrator.receiveMetadata(MediaRemoteState(
+            playerName: "IINA",
+            title: "Song",
+            artist: "Artist",
+            album: nil,
+            artworkData: nil,
+            isPlaying: true,
+            isAvailable: true,
+            lengthMs: nil,
+            positionMs: nil
+        ), generation: generation))
+
+        XCTAssertNil(metadata.artworkData)
+
+        let merged = try XCTUnwrap(orchestrator.receiveArtwork(
+            Data("cover".utf8),
+            currentState: metadata,
+            generation: generation
+        ))
+
+        XCTAssertEqual(merged.title, "Song")
+        XCTAssertEqual(merged.artworkData, Data("cover".utf8))
+    }
+
+    func testRefreshOrchestratorRejectsStaleMetadataAndArtwork() {
+        var orchestrator = MediaRemoteRefreshOrchestrator()
+        let staleGeneration = orchestrator.begin()
+        let currentGeneration = orchestrator.begin()
+        let state = MediaRemoteState(
+            playerName: "IINA",
+            title: "Current Song",
+            artist: nil,
+            album: nil,
+            artworkData: nil,
+            isPlaying: false,
+            isAvailable: true,
+            lengthMs: nil,
+            positionMs: nil
+        )
+
+        XCTAssertNil(orchestrator.receiveMetadata(state, generation: staleGeneration))
+        XCTAssertNil(orchestrator.receiveArtwork(
+            Data("stale-cover".utf8),
+            currentState: state,
+            generation: staleGeneration
+        ))
+        XCTAssertNotNil(orchestrator.receiveMetadata(state, generation: currentGeneration))
+    }
+
+    func testNilArtworkBeforeMetadataPreservesMediaAvailability() throws {
+        var orchestrator = MediaRemoteRefreshOrchestrator()
+        let generation = orchestrator.begin()
+        let oldState = MediaRemoteState.unavailable
+
+        XCTAssertNil(orchestrator.receiveArtwork(
+            nil,
+            currentState: oldState,
+            generation: generation
+        ))
+
+        let merged = try XCTUnwrap(orchestrator.receiveMetadata(MediaRemoteState(
+            playerName: "Music",
+            title: "Available Song",
+            artist: nil,
+            album: nil,
+            artworkData: nil,
+            isPlaying: false,
+            isAvailable: true,
+            lengthMs: nil,
+            positionMs: nil
+        ), generation: generation))
+
+        XCTAssertTrue(merged.isAvailable)
+        XCTAssertEqual(merged.title, "Available Song")
+        XCTAssertNil(merged.artworkData)
+    }
+
     func testVolumeAddressStrategyFallsBackWhenMainVolumeIsUnreadable() {
         XCTAssertEqual(
             SystemVolumeAddressStrategy.preferredElements(

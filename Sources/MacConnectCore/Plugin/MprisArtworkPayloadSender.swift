@@ -5,12 +5,17 @@ struct MprisArtworkPayloadListener {
     let cancel: @MainActor () -> Void
 }
 
+enum MprisArtworkPayloadOutcome {
+    case success
+    case failure
+}
+
 @MainActor
 final class MprisArtworkPayloadSender {
     typealias StartPayload = @MainActor (
         _ fileURL: URL,
         _ peerDeviceId: String,
-        _ onFinished: @escaping @Sendable () -> Void
+        _ onFinished: @escaping @Sendable (MprisArtworkPayloadOutcome) -> Void
     ) -> MprisArtworkPayloadListener
     typealias SendPacket = @MainActor (NetworkPacket, Device) -> Bool
 
@@ -69,7 +74,7 @@ final class MprisArtworkPayloadSender {
         }
 
         let cleanup = Cleanup(fileURL: fileURL)
-        let listener = startPayload(fileURL, device.id) {
+        let listener = startPayload(fileURL, device.id) { _ in
             Task { @MainActor in cleanup.run() }
         }
         guard listener.port != 0 else {
@@ -98,7 +103,7 @@ final class MprisArtworkPayloadSender {
     private static func startLivePayload(
         fileURL: URL,
         peerDeviceId: String,
-        onFinished: @escaping @Sendable () -> Void
+        onFinished: @escaping @Sendable (MprisArtworkPayloadOutcome) -> Void
     ) -> MprisArtworkPayloadListener {
         let started = PayloadTransport.startSender(
             fileURL: fileURL,
@@ -108,7 +113,14 @@ final class MprisArtworkPayloadSender {
                 Log.plugin.error("Album art payload failed: \(error.localizedDescription, privacy: .public)")
             }
         )
-        started.completion.futureResult.whenComplete { _ in onFinished() }
+        started.completion.futureResult.whenComplete { result in
+            switch result {
+            case .success:
+                onFinished(.success)
+            case .failure:
+                onFinished(.failure)
+            }
+        }
         return MprisArtworkPayloadListener(port: started.port) {
             started.completion.fail(NSError(
                 domain: "MacConnect.MprisArtwork",

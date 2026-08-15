@@ -185,6 +185,56 @@ struct MediaRemoteRefreshGeneration {
     }
 }
 
+struct MediaRemoteRefreshOrchestrator {
+    private struct PendingArtwork {
+        let generation: UInt
+        let data: Data?
+    }
+
+    private var refreshGeneration = MediaRemoteRefreshGeneration()
+    private var metadataGeneration: UInt?
+    private var pendingArtwork: PendingArtwork?
+
+    mutating func begin() -> UInt {
+        metadataGeneration = nil
+        pendingArtwork = nil
+        return refreshGeneration.begin()
+    }
+
+    func isCurrent(_ generation: UInt) -> Bool {
+        refreshGeneration.isCurrent(generation)
+    }
+
+    mutating func receiveMetadata(
+        _ state: MediaRemoteState,
+        generation: UInt
+    ) -> MediaRemoteState? {
+        guard isCurrent(generation) else { return nil }
+        var state = state
+        if let pendingArtwork, pendingArtwork.generation == generation {
+            state.artworkData = pendingArtwork.data
+            self.pendingArtwork = nil
+        }
+        metadataGeneration = generation
+        return state
+    }
+
+    mutating func receiveArtwork(
+        _ artworkData: Data?,
+        currentState: MediaRemoteState,
+        generation: UInt
+    ) -> MediaRemoteState? {
+        guard isCurrent(generation) else { return nil }
+        guard metadataGeneration == generation else {
+            pendingArtwork = PendingArtwork(generation: generation, data: artworkData)
+            return nil
+        }
+        var state = currentState
+        state.artworkData = artworkData
+        return state
+    }
+}
+
 @MainActor
 protocol MediaRemoteControlling: AnyObject {
     var state: MediaRemoteState { get }
@@ -314,12 +364,10 @@ final class MediaRemoteBridge: MediaRemoteControlling {
     private let symbols: Symbols?
     private let readStrategy: MediaRemoteReadStrategy
     private var observers: [NSObjectProtocol] = []
-    private var refreshGeneration = MediaRemoteRefreshGeneration()
+    private var refreshOrchestrator = MediaRemoteRefreshOrchestrator()
     private var pollingTask: Task<Void, Never>?
     private var didLogAutomationFailure = false
     private var registeredForNotifications = false
-    private var metadataGeneration: UInt?
-    private var pendingArtwork: (generation: UInt, data: Data?)?
 
     private(set) var state: MediaRemoteState = .unavailable
     var onChange: (() -> Void)?
@@ -396,15 +444,13 @@ final class MediaRemoteBridge: MediaRemoteControlling {
 
     private func refresh() {
         guard let symbols else { return }
-        let generation = refreshGeneration.begin()
-        metadataGeneration = nil
-        pendingArtwork = nil
+        let generation = refreshOrchestrator.begin()
         readArtwork(using: symbols, generation: generation)
 
         if readStrategy == .automationHost {
             Task { [weak self] in
                 let updatedState = await MediaRemoteAutomationReader.read()
-                guard let self, self.refreshGeneration.isCurrent(generation) else { return }
+                guard let self, self.refreshOrchestrator.isCurrent(generation) else { return }
                 guard let updatedState else {
                     if !self.didLogAutomationFailure {
                         Log.plugin.error("MediaRemote automation read failed")
@@ -422,7 +468,7 @@ final class MediaRemoteBridge: MediaRemoteControlling {
             let information = dictionary as NSDictionary? as? [String: Any] ?? [:]
             Task { @MainActor in
                 guard let self,
-                      self.refreshGeneration.isCurrent(generation),
+                      self.refreshOrchestrator.isCurrent(generation),
                       let symbols = self.symbols
                 else { return }
                 self.applyMetadata(MediaRemoteMetadataMapper.map(
@@ -435,7 +481,7 @@ final class MediaRemoteBridge: MediaRemoteControlling {
 
         symbols.getIsPlaying(.main) { [weak self] isPlaying in
             Task { @MainActor in
-                guard let self, self.refreshGeneration.isCurrent(generation) else { return }
+                guard let self, self.refreshOrchestrator.isCurrent(generation) else { return }
                 self.state.isPlaying = isPlaying
                 self.state.isAvailable = true
                 self.onChange?()
@@ -462,26 +508,23 @@ final class MediaRemoteBridge: MediaRemoteControlling {
     }
 
     private func applyMetadata(_ updatedState: MediaRemoteState, generation: UInt) {
-        guard refreshGeneration.isCurrent(generation) else { return }
-        var updatedState = updatedState
-        if let pendingArtwork, pendingArtwork.generation == generation {
-            updatedState.artworkData = pendingArtwork.data
-            self.pendingArtwork = nil
-        }
-        metadataGeneration = generation
+        guard let updatedState = refreshOrchestrator.receiveMetadata(
+            updatedState,
+            generation: generation
+        ) else { return }
         guard updatedState != state else { return }
         state = updatedState
         onChange?()
     }
 
     private func applyArtwork(_ artworkData: Data?, generation: UInt) {
-        guard refreshGeneration.isCurrent(generation) else { return }
-        guard metadataGeneration == generation else {
-            pendingArtwork = (generation, artworkData)
-            return
-        }
-        guard state.artworkData != artworkData else { return }
-        state.artworkData = artworkData
+        guard let updatedState = refreshOrchestrator.receiveArtwork(
+            artworkData,
+            currentState: state,
+            generation: generation
+        ) else { return }
+        guard updatedState != state else { return }
+        state = updatedState
         onChange?()
     }
 
